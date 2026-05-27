@@ -4,7 +4,7 @@ description: Use when building a PRISMA pre-screen credibility-filter for system
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.4.0"
+  version: "0.4.2"
 ---
 
 # SR Pre-Screen Credibility Filter
@@ -298,34 +298,20 @@ Input surface: textarea + 3 threshold controls. Empty state: Try-sample with ~10
 
 ## API contract — load-bearing, follow exactly
 
+**Authoritative source:** https://platform.amass.tech/documentation/for-ai-agents/llm-quick-reference.md — the live single-page reference for every endpoint, param, enum, and response schema across BiomedCore + TrialCore. If anything in this SKILL.md drifts from that doc, the doc wins.
+
 ### Endpoints used
 
 - `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID → `AMBC_` (chunked to ~100 items per request)
 - `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default fields (covers `isRetracted` + `journalQualityJufo` + `citationCount` — do NOT pass `include` flags)
 
-### Auth + rate limit
+### Critical operational rules (load-bearing — the build fails without them)
 
-`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s. 429 → exponential backoff via `Retry-After`. 401/403 → surface directly.
-
-### Response envelope
-
-`{ "data": ... }` wrapped — unwrap before consuming. `POST /records/lookup` per-item:
-
-```json
-{ "input": { "pmid": "..." }, "amassIds": ["AMBC_..."] }
-```
-
-or
-
-```json
-{ "input": { "pmid": "..." }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }
-```
-
-Per-item `error` is a STRUCTURED OBJECT — extract `.message` before rendering. NEVER render the error object directly (React #31 crashes).
-
-### Top-level errors
-
-Non-2xx body: `{ "error": { "code": ..., "message": ... } }`. The reference code's `req<T>` throws; handler `try/catch` re-throws so TanStack Query surfaces as `mutation.error.message`.
+- **Auth:** `Authorization: Bearer ${AMASS_API_KEY}` on every request. Get key from https://platform.amass.tech. Rate limit: 60 req / 60 s per user+org. On HTTP 429, read `Retry-After` and back off exponentially. On 401/403, surface the credential error directly.
+- **Response envelope:** every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
+- **Per-item lookup errors:** each `data[]` element on `POST /records/lookup` is either `{ amassIds: [...] }` (success) OR `{ error: { code, message } }` (per-item failure). The error field is a STRUCTURED OBJECT — empirically verified, even if the live docs example shows the simpler `{ error: "..." }` form. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (React #31 crash). Example: `{ "input": { "pmid": "99999999" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }`.
+- **Top-level errors:** non-2xx body is `{ "error": { "status", "code", "message" } }`. The reference code's `req<T>` throws with the upstream code+message; the route handler's outer `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message` on the client. NEVER let an uncaught throw propagate to the route-level error boundary.
+- **Lookup before fetch:** `GET /records/{amassId}` accepts ONLY canonical `AMBC_` / `AMTC_` IDs. Passing PMID/DOI/NCT directly returns 404. Always: lookup → resolve canonical → fetch by canonical ID.
 
 ### Lookup chunking
 

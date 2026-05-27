@@ -4,7 +4,7 @@ description: Use when building a trust-filtered biomedical RAG with an MCP serve
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.4.0"
+  version: "0.4.2"
 ---
 
 # Trust-Filtered Biomedical RAG (MCP)
@@ -257,23 +257,21 @@ Input surface: chat textarea + 4 threshold chips. Empty state: Try-sample loadin
 
 ## API contract — load-bearing, follow exactly
 
+**Authoritative source:** https://platform.amass.tech/documentation/for-ai-agents/llm-quick-reference.md — the live single-page reference for every endpoint, param, enum, and response schema across BiomedCore + TrialCore. If anything in this SKILL.md drifts from that doc, the doc wins.
+
 ### Endpoints used
 
 - `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID/DOI → `AMBC_`
 - `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default trust-filter fields
 - `GET /api/v1/cores/biomedcore/records/{amassId}?include=referencesTrialCore,citedBy,fulltext` — fetch paper record with cross-core trial linkage + optional fulltext
 
-### Auth + rate limit
+### Critical operational rules (load-bearing — the build fails without them)
 
-`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s rate limit. 429 → exponential backoff. 401/403 → surface directly.
-
-### Response envelope
-
-`{ "data": ... }` wrapped. Per-item lookup error is structured `{ code, message }` — extract `.message`. NEVER render error object directly (React #31).
-
-### Top-level errors
-
-Non-2xx body: `{ "error": { "code", "message" } }`. Surface as chat-bubble message, not route-level crash.
+- **Auth:** `Authorization: Bearer ${AMASS_API_KEY}` on every request. Get key from https://platform.amass.tech. Rate limit: 60 req / 60 s per user+org. On HTTP 429, read `Retry-After` and back off exponentially. On 401/403, surface the credential error directly.
+- **Response envelope:** every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
+- **Per-item lookup errors:** each `data[]` element on `POST /records/lookup` is either `{ amassIds: [...] }` (success) OR `{ error: { code, message } }` (per-item failure). The error field is a STRUCTURED OBJECT — empirically verified, even if the live docs example shows the simpler `{ error: "..." }` form. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (React #31 crash). Example: `{ "input": { "pmid": "99999999" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }`.
+- **Top-level errors:** non-2xx body is `{ "error": { "status", "code", "message" } }`. The reference code's `req<T>` throws with the upstream code+message; the route handler's outer `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message` on the client. NEVER let an uncaught throw propagate to the route-level error boundary.
+- **Lookup before fetch:** `GET /records/{amassId}` accepts ONLY canonical `AMBC_` / `AMTC_` IDs. Passing PMID/DOI/NCT directly returns 404. Always: lookup → resolve canonical → fetch by canonical ID.
 
 ---
 

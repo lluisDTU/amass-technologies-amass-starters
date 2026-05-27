@@ -4,7 +4,7 @@ description: Use when building a weekly pipeline-monitoring digest for biotech c
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.4.0"
+  version: "0.4.2"
 ---
 
 # Pipeline Monitor
@@ -33,7 +33,17 @@ export type LookupResult = ReadonlyArray<{
   error?: { code?: string; message?: string };
 }>;
 
-export type Phase = "PHASE2" | "PHASE2_PHASE3" | "PHASE3";
+// Phase enum — MUST match Amass TrialCore API exactly (with slashes, not underscores).
+// Verified against https://platform.amass.tech/documentation/for-ai-agents/llm-quick-reference.md
+export type Phase =
+  | "EARLY_PHASE1"
+  | "PHASE1"
+  | "PHASE1/PHASE2"
+  | "PHASE2"
+  | "PHASE2/PHASE3"
+  | "PHASE3"
+  | "PHASE4"
+  | "NA";
 
 export interface TrialSearchOpts {
   phase?: ReadonlyArray<Phase>;
@@ -119,7 +129,10 @@ export const WatchlistSchema = z.object({
     canonical: z.string(),
     aliases: z.array(z.string()).default([]),
   })).min(1),
-  phases: z.array(z.enum(["PHASE2", "PHASE2_PHASE3", "PHASE3"])).default(["PHASE2", "PHASE2_PHASE3", "PHASE3"]),
+  phases: z.array(z.enum([
+    "EARLY_PHASE1", "PHASE1", "PHASE1/PHASE2", "PHASE2",
+    "PHASE2/PHASE3", "PHASE3", "PHASE4", "NA",
+  ])).default(["PHASE2", "PHASE2/PHASE3", "PHASE3"]),
   last_check: z.string(), // ISO YYYY-MM-DD
 });
 
@@ -274,23 +287,21 @@ Input surface: single YAML textarea. Empty state: Try-sample with the SCLC-DLL3-
 
 ## API contract — load-bearing, follow exactly
 
+**Authoritative source:** https://platform.amass.tech/documentation/for-ai-agents/llm-quick-reference.md — the live single-page reference for every endpoint, param, enum, and response schema across BiomedCore + TrialCore. If anything in this SKILL.md drifts from that doc, the doc wins.
+
 ### Endpoints used
 
-- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search
+- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=PHASE2&phase=PHASE2/PHASE3&phase=PHASE3&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search
 - `GET /api/v1/cores/trialcore/records/{amassId}?include=referencesBiomedCore` — fetch trial record with paper-side cross-core spine
 - `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record (default fields cover trust signals)
 
-### Auth + rate limit
+### Critical operational rules (load-bearing — the build fails without them)
 
-`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s rate limit. 429 → exponential backoff via `Retry-After`. 401/403 → surface directly.
-
-### Response envelope
-
-All endpoints return `{ "data": ... }` — unwrap before consuming. TrialCore search returns `{ "data": [...] }` (array of trial records). Per-record GETs return `{ "data": {...} }` (single object).
-
-### Top-level errors
-
-Non-2xx body: `{ "error": { "code": ..., "message": ... } }`. The reference code's `req<T>` throws with the upstream message; handler `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message`.
+- **Auth:** `Authorization: Bearer ${AMASS_API_KEY}` on every request. Get key from https://platform.amass.tech. Rate limit: 60 req / 60 s per user+org. On HTTP 429, read `Retry-After` and back off exponentially. On 401/403, surface the credential error directly.
+- **Response envelope:** every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
+- **Per-item lookup errors:** each `data[]` element on `POST /records/lookup` is either `{ amassIds: [...] }` (success) OR `{ error: { code, message } }` (per-item failure). The error field is a STRUCTURED OBJECT — empirically verified, even if the live docs example shows the simpler `{ error: "..." }` form. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (React #31 crash). Example: `{ "input": { "pmid": "99999999" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }`.
+- **Top-level errors:** non-2xx body is `{ "error": { "status", "code", "message" } }`. The reference code's `req<T>` throws with the upstream code+message; the route handler's outer `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message` on the client. NEVER let an uncaught throw propagate to the route-level error boundary.
+- **Lookup before fetch:** `GET /records/{amassId}` accepts ONLY canonical `AMBC_` / `AMTC_` IDs. Passing PMID/DOI/NCT directly returns 404. Always: lookup → resolve canonical → fetch by canonical ID.
 
 ### TrialCore search ceiling
 
@@ -302,7 +313,7 @@ Non-2xx body: `{ "error": { "code": ..., "message": ... } }`. The reference code
 
 - **Watchlist:** SCLC-DLL3-2026Q2
 - **Sponsors:** Amgen, Roche (canonical for Genentech), AbbVie, Boehringer Ingelheim, Harpoon Therapeutics
-- **Phases:** PHASE2, PHASE2_PHASE3, PHASE3
+- **Phases:** PHASE2, PHASE2/PHASE3, PHASE3
 - **last_check:** 2026-05-13
 - **Expected trial anchor:** NCT05060016 (DeLLphi-301, Amgen) surfaces in the Amgen panel with `phase=PHASE2`
 - **Expected paper anchor:** PMID 37861218 (Ahn MJ et al. NEJM 2023) surfaces via DeLLphi-301 cross-core walk
@@ -324,7 +335,7 @@ sponsors:
     aliases: []
   - canonical: Harpoon Therapeutics
     aliases: []
-phases: [PHASE2, PHASE2_PHASE3, PHASE3]
+phases: [PHASE2, PHASE2/PHASE3, PHASE3]
 last_check: "2026-05-13"
 ```
 
@@ -333,7 +344,7 @@ last_check: "2026-05-13"
 ## Per-starter constraints
 
 - Sponsor-name canonicalisation: persist analyst-confirmed canonical→aliases map in the watchlist YAML. Genentech maps to Roche.
-- Sponsor cardinality probe: if `query=<canonical>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3` (no `minStartDate`) returns ≥300 records, narrow the indication scope before the weekly run.
+- Sponsor cardinality probe: if `query=<canonical>&phase=PHASE2&phase=PHASE2/PHASE3&phase=PHASE3` (no `minStartDate`) returns ≥300 records, narrow the indication scope before the weekly run.
 - 3-panel dashboard: new trials (left), new papers via trial→paper cross-core walk (center), retraction-flagged citations (right). Do NOT collapse panels.
 - Markdown digest filename: `digest-<watchlist_id>-<YYYY-Wnn>.md` (ISO week number).
 - v0.1: single consolidated response per run. No digest-history persistence (extension path).
