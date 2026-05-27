@@ -2,7 +2,7 @@
 
 > Six end-to-end starter apps that show what's distinctive about the [Amass API](https://api.amass.tech) — built for biomedical literature and clinical-trial workflows that depend on canonical IDs, cross-core links, and built-in credibility signals (retraction, journal quality, citation count) that elsewhere require paid third-party APIs.
 
-**v0.2.0 — kit slim, May 2026.** Apache-2.0.
+**v0.3.0 — explicit file templates, May 2026.** Apache-2.0.
 
 ---
 

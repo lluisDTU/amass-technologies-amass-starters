@@ -1,87 +1,29 @@
 ---
 name: amass-trust-filtered-rag
-description: Use when building a trust-filtered biomedical RAG with an MCP server — two MCP tools (fetch_credible_evidence_by_id + get_credible_paper_with_trials) wrapped as a Next.js chat UI, with JuFo + retraction + citation-count post-filters wired into every fetched evidence record.
+description: Use when building a trust-filtered biomedical RAG with an MCP server — two MCP tools (fetch_credible_evidence_by_id + get_credible_paper_with_trials) wrapped as a TanStack Start chat UI, with JuFo + retraction + citation-count post-filters wired into every fetched evidence record.
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Trust-Filtered Biomedical RAG (MCP)
 
-For LLM-tooling builders shipping biomedical AI agents — Claude Desktop tool authors, MCP-aware Cursor users, custom-orchestrator developers. The scaffold ships two layers in one repo: an MCP server (`lib/mcp-tools.ts`) exposing two production-shaped tools, plus a Next.js chat UI consuming the same tool handlers in-process so a Lovable user sees the end-to-end MCP flow on first `npm run dev`. The load-bearing Amass primitive is the trust-filter conjunction (JuFo + retraction + citation count) returned in the same response as the cited evidence, plus paper↔trial cross-core linkage — competitor stacks require 2-3 separate API calls and a join layer on the agent side.
+For LLM-tooling builders shipping biomedical AI agents — Claude Desktop tool authors, MCP-aware Cursor users, custom-orchestrator developers. The scaffold ships two layers in one repo: an MCP server (`lib/mcp-tools.server.ts`) exposing two production-shaped tools, plus a TanStack Start chat UI consuming the same tool handlers in-process so a Lovable user sees the end-to-end MCP flow on first `npm run dev`. The load-bearing Amass primitive is the trust-filter conjunction (JuFo + retraction + citation count) returned in the same response as the cited evidence, plus paper↔trial cross-core linkage — competitor stacks require 2-3 separate API calls and a join layer on the agent side.
 
 ---
 
-## Important — Lovable scaffold cleanup
+## Scaffold target — read FIRST
 
-**Before generating the page component**, the AI builder MUST verify there is NO leftover Lovable blank-app placeholder in the final JSX. Specifically, the page root must NOT contain:
+This starter is built on **TanStack Start + Vite + TanStack Router + TanStack Query** (Lovable's default). FOUR TypeScript files (one more than other starters because the MCP server is architecturally distinct); do NOT wrap them in any outer template or placeholder component.
 
-- An outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app content
-- `<img data-lovable-blank-page-placeholder="REMOVE_THIS" src="https://cdn.gpteng.co/blank-app-v1.svg" ... />`
+For Next.js App Router users, see the Appendix.
 
-If these are present from Lovable's default template, REMOVE them entirely. The real app's root element must be the page's only top-level wrapper. Leaving the placeholder wrapper in place produces malformed JSX (unclosed outer div) and the published deploy renders a generic error page instead of the app.
-
----
-
-## What you build
-
-The scaffold ships two architecturally distinct layers in one repo:
-
-1. **MCP server in `lib/mcp-tools.ts`** — framework-agnostic Node.js + `@modelcontextprotocol/sdk`. Exposes two tools:
-   - `fetch_credible_evidence_by_id(ids[], min_jufo?, allow_retracted?, min_citation_count?)` — resolves PMIDs/DOIs/AMBC_ IDs to canonical, fetches per-paper records, and post-filters on trust signals. Returns filtered evidence records.
-   - `get_credible_paper_with_trials(amass_id, include_fulltext?)` — fetches a single paper with `referencesTrialCore` + `citedBy` arrays populated; optionally includes fulltext excerpt. Returns the paper record plus its cross-core trial linkage.
-
-2. **Next.js chat UI** that consumes the same MCP tool handlers in-process via a `/api/mcp-chat` route. The builder can lift the MCP server out into their own agent stack (Claude Desktop, MCP-aware Cursor, custom orchestrator) by pointing `npx @modelcontextprotocol/inspector` or a stdio launcher at `lib/mcp-tools.ts`.
-
-The input surface is a chat textarea accepting PMIDs / DOIs / `AMBC_` IDs as comma-or-newline-separated identifiers, plus chips above the textarea for per-message threshold overrides (`min_jufo`, `allow_retracted`, `min_citation_count`, `include_fulltext`). The empty state offers a Try-sample button. The output is an evidence-card panel per assistant turn, with a "Get with trials" follow-up button on each card and an "MCP tool call" disclosure showing the underlying tool payload as JSON.
-
----
-
-## API contract — load-bearing, follow exactly
-
-### Endpoints used
-
-- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID/DOI → `AMBC_`
-- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default trust-filter fields (`isRetracted`, `journalQualityJufo`, `citationCount`)
-- `GET /api/v1/cores/biomedcore/records/{amassId}?include=referencesTrialCore,citedBy,fulltext` — fetch paper record with cross-core trial linkage and optional fulltext
-
-### Auth + rate limit
-
-`Authorization: Bearer ${AMASS_API_KEY}` on every request. 60 requests / 60 seconds per user+org. On HTTP 429, read the `Retry-After` header and back off exponentially. On 401/403, surface the credential error directly — retry won't fix it.
-
-### Response envelope (CRITICAL)
-
-Every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
-
-For `POST /records/lookup`, each `data[]` element is one of:
-
-```json
-{ "input": { "pmid": "..." }, "amassIds": ["AMBC_..."] }
-```
-
-or
-
-```json
-{ "input": { "pmid": "..." }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }
-```
-
-The per-item `error` field is a STRUCTURED OBJECT with `code` and `message` — NOT a bare string. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (crashes the surface with React error #31).
-
-### Top-level errors
-
-Non-2xx HTTP response body: `{ "error": { "status": ..., "code": ..., "message": ... } }`. Throw with a message including the upstream `code` + `message`. The chat route's `try/catch` surfaces this as a chat-bubble error inline — never let it propagate to the route-level error boundary.
-
----
-
-## Reference code
-
-### `lib/amass.ts` — server-only API client
-
-Drop this file in unchanged. Framework-agnostic.
+### File 1: `src/lib/amass.server.ts` — server-only API client
 
 ```ts
-import "server-only";
+// src/lib/amass.server.ts
+// Server-only via .server.ts filename. DO NOT add `import "server-only"`.
 
 export type LookupResult = ReadonlyArray<{
   input?: { pmid?: string; doi?: string; nctId?: string };
@@ -127,10 +69,7 @@ class AmassClient {
   batchLookupBiomed = (items: ReadonlyArray<{ pmid?: string; doi?: string }>) =>
     this.req<LookupResult>("POST", "/api/v1/cores/biomedcore/records/lookup", { items });
 
-  getBiomedRecord = (
-    amassId: string,
-    includes: ReadonlyArray<"fulltext" | "referencesTrialCore" | "references" | "citedBy"> = [],
-  ) => {
+  getBiomedRecord = (amassId: string, includes: ReadonlyArray<string> = []) => {
     const qs = includes.length ? `?${includes.map((i) => `include=${i}`).join("&")}` : "";
     return this.req<unknown>("GET", `/api/v1/cores/biomedcore/records/${amassId}${qs}`);
   };
@@ -143,14 +82,15 @@ export const getAmassClient = () =>
 export { AmassClient };
 ```
 
-### `lib/mcp-tools.ts` — MCP server with the two tool handlers
+### File 2: `src/lib/mcp-tools.server.ts` — MCP server with the two tool handlers
 
-The tool handlers are exported as plain `async` functions so the Next.js chat route can import them directly (in-process) AND a stdio launcher can register them with `@modelcontextprotocol/sdk`. Pin `@modelcontextprotocol/sdk` to an exact version (no caret) — the tool-schema serialization shape couples to the SDK's `Server` class.
+The tool handlers are exported as plain `async` functions so the chat route can import them directly (in-process) AND a stdio launcher can register them with `@modelcontextprotocol/sdk`. Pin `@modelcontextprotocol/sdk` to an EXACT version (no caret) — the tool-schema serialization shape couples to the SDK's `Server` class.
 
 ```ts
-import "server-only";
+// src/lib/mcp-tools.server.ts
+// Server-only via .server.ts filename. DO NOT add `import "server-only"`.
 import { z } from "zod";
-import { getAmassClient } from "./amass";
+import { getAmassClient } from "./amass.server";
 
 export const FetchCredibleEvidenceInput = z.object({
   ids: z.array(z.string()).min(1).max(50),
@@ -164,7 +104,7 @@ export const GetCredibleEvidenceInput = z.object({
   include_fulltext: z.boolean().optional().default(false),
 });
 
-function classifyId(id: string) {
+function classifyId(id: string): { amassId?: string; doi?: string; pmid?: string } {
   if (/^AMBC_/.test(id)) return { amassId: id };
   if (/^10\./.test(id)) return { doi: id };
   return { pmid: id };
@@ -211,111 +151,214 @@ export async function get_credible_paper_with_trials(
 }
 ```
 
-### Server-side chat route
-
-Write the chat route in your framework's preferred server-side shape (TanStack Start `createServerFn` OR Next.js `app/api/mcp-chat/route.ts`). The route accepts a user message + per-message overrides, parses identifiers out of the message, invokes the appropriate MCP tool handler, and returns the assistant response with the resulting evidence cards.
-
-**Critical:** wrap the entire handler body in `try { ... } catch (err) { ... }`. Surface errors as a chat-bubble message, never a route-level crash.
-
-For the stdio launcher (lifting the MCP server out to Claude Desktop, Cursor, etc.), use a separate entry-point file that registers the tools with `@modelcontextprotocol/sdk`'s `Server` class. The tool handlers themselves are the SAME functions imported from `lib/mcp-tools.ts`.
-
-### Idle-timeout helper
+### File 3: `src/lib/mcp-chat.functions.ts` — TanStack Start server function consuming the MCP tools
 
 ```ts
-async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000): AsyncGenerator<T> {
-  while (true) {
-    const timeout = new Promise<{ kind: "timeout" }>((r) =>
-      setTimeout(() => r({ kind: "timeout" }), maxIdleMs),
-    );
-    const next = gen.next().then((r) => ({ kind: "next" as const, r }));
-    const result = await Promise.race([next, timeout]);
-    if (result.kind === "timeout")
-      throw new Error(`Stream stalled for ${Math.round(maxIdleMs / 1000)}s — an Amass call likely hung.`);
-    if (result.r.done) return;
-    yield result.r.value;
-  }
+// src/lib/mcp-chat.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import {
+  fetch_credible_evidence_by_id,
+  get_credible_paper_with_trials,
+  FetchCredibleEvidenceInput,
+  GetCredibleEvidenceInput,
+} from "./mcp-tools.server";
+
+const ChatRequestSchema = z.discriminatedUnion("tool", [
+  z.object({ tool: z.literal("fetch_credible_evidence_by_id"), args: FetchCredibleEvidenceInput }),
+  z.object({ tool: z.literal("get_credible_paper_with_trials"), args: GetCredibleEvidenceInput }),
+]);
+
+export const invokeMcpTool = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => ChatRequestSchema.parse(input))
+  .handler(async ({ data }) => {
+    try {
+      if (data.tool === "fetch_credible_evidence_by_id") {
+        const result = await fetch_credible_evidence_by_id(data.args);
+        return { tool: data.tool, result };
+      }
+      const result = await get_credible_paper_with_trials(data.args);
+      return { tool: data.tool, result };
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : "MCP tool call failed");
+    }
+  });
+```
+
+### File 4: `src/routes/index.tsx` — TanStack Start route + chat UI
+
+The `component: Index` binding is REQUIRED. Root is `<main>` — no outer wrapper.
+
+```tsx
+// src/routes/index.tsx
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { invokeMcpTool } from "@/lib/mcp-chat.functions";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Trust-Filtered Biomedical RAG (MCP) — Amass" },
+      { name: "description", content: "Two MCP tools + chat UI: JuFo + retraction + citation-count post-filters on every fetched evidence record." },
+    ],
+  }),
+  component: Index, // ← REQUIRED. Without this, SSR fails.
+});
+
+function Index() {
+  const [chatInput, setChatInput] = useState("");
+  const [minJufo, setMinJufo] = useState(1);
+  const [allowRetracted, setAllowRetracted] = useState(false);
+  const [minCitationCount, setMinCitationCount] = useState(0);
+  const [includeFulltext, setIncludeFulltext] = useState(false);
+  const invoke = useServerFn(invokeMcpTool);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      // Parse identifiers from chatInput (PMID/DOI/AMBC_); call fetch_credible_evidence_by_id
+      const ids = chatInput.split(/[,\s]+/).filter(Boolean);
+      return invoke({ data: { tool: "fetch_credible_evidence_by_id", args: { ids, min_jufo: minJufo, allow_retracted: allowRetracted, min_citation_count: minCitationCount } } });
+    },
+  });
+
+  return (
+    <main className="min-h-screen bg-background text-foreground font-sans">
+      <header className="border-b border-border">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <h1 className="text-2xl font-extrabold tracking-tight">amass</h1>
+          <span className="text-xs text-muted-foreground font-mono">trust-filtered-rag · v0.1</span>
+        </div>
+      </header>
+
+      <section className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+        {/* Chat textarea + threshold chips (min_jufo, allow_retracted, min_citation_count, include_fulltext) + Try-sample + Send + Evidence cards per assistant turn (PMID + JuFo badge + isRetracted chip + citationCount + cross-core trial chips + "MCP tool call" disclosure as JSON) + "Get with trials" button on each card */}
+      </section>
+    </main>
+  );
 }
 ```
 
 ---
 
-## Worked example
+## What you build
 
-Use this verified PMID in the empty-state Try-sample button. Render ALL trust-filter values from the live Amass response — NEVER hardcode them.
+The scaffold ships TWO architecturally distinct layers in one repo:
+
+1. **MCP server in `src/lib/mcp-tools.server.ts`** — Node.js + `@modelcontextprotocol/sdk`. Exposes two tools:
+   - `fetch_credible_evidence_by_id(ids[], min_jufo?, allow_retracted?, min_citation_count?)` — resolves PMIDs/DOIs/AMBC_ IDs to canonical, fetches per-paper records, post-filters on trust signals.
+   - `get_credible_paper_with_trials(amass_id, include_fulltext?)` — fetches paper record with `referencesTrialCore` + `citedBy` arrays.
+
+2. **TanStack Start chat UI** consuming the same handlers in-process via `src/lib/mcp-chat.functions.ts`. Builders can lift the MCP server out into their own agent stack (Claude Desktop, MCP-aware Cursor, custom orchestrator) by pointing `npx @modelcontextprotocol/inspector` or a stdio launcher at `mcp-tools.server.ts`.
+
+Input surface: chat textarea + 4 threshold chips. Empty state: Try-sample loading "Fetch credible evidence for PMID 37861218". Output: evidence-card panel per assistant turn with "Get with trials" follow-up + "MCP tool call" JSON disclosure.
+
+---
+
+## API contract — load-bearing, follow exactly
+
+### Endpoints used
+
+- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID/DOI → `AMBC_`
+- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default trust-filter fields
+- `GET /api/v1/cores/biomedcore/records/{amassId}?include=referencesTrialCore,citedBy,fulltext` — fetch paper record with cross-core trial linkage + optional fulltext
+
+### Auth + rate limit
+
+`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s rate limit. 429 → exponential backoff. 401/403 → surface directly.
+
+### Response envelope
+
+`{ "data": ... }` wrapped. Per-item lookup error is structured `{ code, message }` — extract `.message`. NEVER render error object directly (React #31).
+
+### Top-level errors
+
+Non-2xx body: `{ "error": { "code", "message" } }`. Surface as chat-bubble message, not route-level crash.
+
+---
+
+## Worked example
 
 - **Sample query text:** `Fetch credible evidence for PMID 37861218`
 - **PMID 37861218** (Ahn MJ et al., NEJM 2023, Tarlatamab DeLLphi-301 primary publication) — expected `isRetracted=false`, JuFo tier 3 (NEJM), `referencesTrialCore` populated with `AMTC_` IDs
 
-Try-sample tooltip: "Ahn MJ et al. NEJM 2023 — tarlatamab pivotal trial in extensive-stage SCLC. Tarlatamab worked example shape-illustrative; re-verify before binding to a real RAG production workflow."
+Try-sample tooltip: "Ahn MJ et al. NEJM 2023 — tarlatamab pivotal trial in ES-SCLC. Tarlatamab worked example shape-illustrative; re-verify before binding to a real RAG production workflow."
 
 ---
 
 ## Per-starter constraints
 
-- The two MCP tools (`fetch_credible_evidence_by_id` + `get_credible_paper_with_trials`) are the public API of this starter. Their Zod input schemas (`FetchCredibleEvidenceInput`, `GetCredibleEvidenceInput`) are the request contract — silent changes break MCP client integrations.
-- Pin `@modelcontextprotocol/sdk` to an EXACT version (no caret). The tool-schema serialization shape couples to the SDK's `Server` class; minor-version bumps break in-process wiring.
-- Pin `ai` and `@ai-sdk/react` (caret ranges) for the chat-UI streaming layer.
-- Evidence card rendering per assistant turn: PMID in monospace + JuFo badge (1-3, ★ icon) + isRetracted chip (rendered red when `isRetracted=true`, hidden when `false`) + citationCount + optional fulltext excerpt (~280 chars when `include_fulltext=true`) + clickable `AMTC_` chips for cross-core trial linkage.
-- Each card carries an "MCP tool call" disclosure surfacing the underlying tool payload as formatted JSON — the builder's debugging affordance for lifting the MCP boundary into their own agent stack.
+- Two MCP tools are the public API. Their Zod input schemas (`FetchCredibleEvidenceInput`, `GetCredibleEvidenceInput`) are the request contract.
+- Pin `@modelcontextprotocol/sdk` to EXACT version (no caret). Tool-schema serialization couples to SDK's `Server` class.
+- Pin `ai` and `@ai-sdk/react` (caret ranges) for chat-UI streaming layer.
+- Evidence card per assistant turn: PMID in monospace + JuFo badge (1-3, ★ icon) + isRetracted chip (red when true, hidden when false) + citationCount + optional fulltext excerpt (~280 chars when `include_fulltext=true`) + clickable `AMTC_` chips for cross-core trial linkage.
+- Each card carries an "MCP tool call" disclosure surfacing the underlying tool payload as formatted JSON — the debugging affordance for builders lifting the MCP boundary into their own agent stack.
 
 ---
 
 ## Kit conventions (apply to all Amass starters)
 
 **Visual:**
-- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) render in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
-- Neutral, professional palette. shadcn-style design tokens or Tailwind defaults are fine — no marketing colors. Dark mode follows OS `prefers-color-scheme`; no toggle.
+- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
+- Neutral palette. shadcn-style tokens or Tailwind defaults. Dark mode follows OS `prefers-color-scheme`; no toggle.
 - Lucide React for icons.
 - Header: wordmark `amass` in Inter weight 800 at top-left.
 
 **UX behavior:**
 - Empty state shows a Try-sample button that loads the worked example identifiers verbatim.
 - Long-running fan-outs render an analyst-visible Cancel button + progress indicator.
-- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`; on stall, surface the error inline.
-- Per-row error rendering: invalid identifiers show the verbatim upstream error message on that one row. Errors NEVER crash the surface.
-- No `AskUserQuestion` to gate scaffolding on credentials — the standard env-var prompt covers `AMASS_API_KEY` at runtime.
+- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`.
+- Per-row error rendering: invalid identifiers show verbatim upstream error. Errors NEVER crash the surface.
+- No `AskUserQuestion` gating on credentials — env-var prompt covers `AMASS_API_KEY` at runtime.
 
-**Stack:**
-- TypeScript + React + a server-function-capable framework. Lovable defaults to TanStack Start; Next.js App Router is the alternative.
-- `lib/amass.ts` and `lib/mcp-tools.ts` carry `import "server-only"` at the top. Never imported from a `"use client"` component.
-- `https://api.amass.tech` is hardcoded as the base URL in `lib/amass.ts`. Do NOT introduce an `AMASS_API_BASE_URL` env var.
-- Pin React 18.3.1, TypeScript 5.4.5, zod 3.23.8, lucide-react 0.453.0, server-only 0.0.1, `@modelcontextprotocol/sdk` 1.29.0 (exact, no caret), `ai` ^4.0.18, `@ai-sdk/react` ^1.0.7. Add framework packages on top.
-
-**Pre-publish cleanup (DO THIS — Lovable scaffolds may leave these in place):**
-- Strip ALL `data-lovable-blank-page-placeholder="REMOVE_THIS"` attributes.
-- Strip ALL `<img>` tags pointing at `cdn.gpteng.co`.
-- If Lovable left an outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app + a leftover placeholder image, REMOVE the outer wrapper entirely so the real app's root `<div>` is the only top-level returned element.
+**Stack (TanStack Start + Vite — Lovable's default):**
+- Server-only files use `.server.ts` filename (`src/lib/amass.server.ts`, `src/lib/mcp-tools.server.ts`). DO NOT add `import "server-only"`.
+- Server functions: `src/lib/<name>.functions.ts` with `createServerFn({ method: "POST" }).inputValidator(...).handler(...)`.
+- Route + page: `src/routes/index.tsx` with `createFileRoute("/")({ head, component: Index })`. The `component` binding is REQUIRED.
+- `https://api.amass.tech` hardcoded. NO `AMASS_API_BASE_URL` env var.
+- Additional pins for this starter: `@modelcontextprotocol/sdk` EXACT version (no caret); `ai` + `@ai-sdk/react` caret ranges.
 
 ---
 
 ## Validation
 
-After `npm run dev`, verify in order:
+After `npm run dev`:
 
-1. **Empty state** renders the chat UI cleanly with the Try-sample button + threshold chips visible. Browser console clean (no errors about `data-lovable-blank-page-placeholder` or unclosed JSX, no `@modelcontextprotocol/sdk` import warnings).
-2. **Try sample** click invokes `fetch_credible_evidence_by_id` with PMID 37861218. An evidence card renders below the assistant turn showing the canonical `AMBC_` ID in monospace, JuFo tier 3 badge, no retraction chip (live `isRetracted=false`), citation count, and clickable `AMTC_` chips for the DeLLphi-301 trial.
-3. **Get with trials:** click the "Get with trials" button on the evidence card. `get_credible_paper_with_trials` invokes; the trial-side details render inline below the card (NCT05060016 + DeLLphi-301 brief title in monospace).
-4. **MCP tool call disclosure:** expand the disclosure on any card. The underlying tool payload renders as formatted JSON, showing the full request + response shape — the debugging affordance for builders.
+1. **Empty state** renders `<main>` root + amass wordmark + chat textarea + 4 threshold chips + Try-sample. Console clean (no errors about `data-lovable-blank-page-placeholder`, unclosed JSX, `import "server-only"` crashes, or `@modelcontextprotocol/sdk` import warnings).
+2. **Try sample** click invokes `fetch_credible_evidence_by_id` with PMID 37861218. Evidence card renders with canonical `AMBC_` ID in monospace, JuFo tier 3 badge, no retraction chip (live `isRetracted=false`), citation count, clickable `AMTC_` chips for DeLLphi-301 trial.
+3. **Get with trials:** click button on the evidence card. `get_credible_paper_with_trials` invokes; trial-side details render inline (NCT05060016 + DeLLphi-301 brief title in monospace).
+4. **MCP tool call disclosure:** expand the disclosure on any card. Underlying tool payload renders as formatted JSON.
 
 ---
 
 ## Hand-off
 
-Build, lint, typecheck must pass. Apply the Pre-publish cleanup steps from Kit conventions above.
+Build, lint, typecheck must pass.
 
-**Credentials:** get your `AMASS_API_KEY` from https://platform.amass.tech and add it to `.env`.
-
-To run: `npm run dev`.
+**Credentials:** `AMASS_API_KEY` from https://platform.amass.tech. Run `npm run dev`.
 
 **Want to extend it?**
-- Wire the MCP server to your own agent (Claude Desktop, Cursor, or a custom orchestrator) via the stdio launcher at `lib/mcp-tools.ts`.
+- Wire the MCP server to your own agent (Claude Desktop, Cursor, custom orchestrator) via stdio launcher at `mcp-tools.server.ts`.
 - Add a third MCP tool for retraction-cascade enumeration (combine with the retraction-cascade-monitor starter).
-- Wrap the chat UI in a server-sent-events streaming layer for long fan-outs and incremental evidence rendering.
+- Wrap the chat UI in a server-sent-events streaming layer for long fan-outs.
 
-Questions? Join the Amass Developer Community on Discord: https://discord.com/invite/sEGaBHMhWa.
+Discord: https://discord.com/invite/sEGaBHMhWa.
 
 ---
 
 ## License
 
 Apache-2.0. Copyright 2026 Amass Technologies. Source: https://github.com/lluisDTU/amass-technologies-amass-starters.
+
+---
+
+## Appendix — Next.js App Router alternative
+
+For Claude Code / Cursor / Next.js production users:
+
+- `lib/amass.ts` — same code as `src/lib/amass.server.ts` above, with `import "server-only"` added at the top.
+- `lib/mcp-tools.ts` — same code as `src/lib/mcp-tools.server.ts` above, with `import "server-only"` added at the top.
+- `app/api/mcp-chat/route.ts` — standard Next.js POST handler dispatching to the MCP tools.
+- `app/page.tsx` — `"use client"` chat page POSTing to `/api/mcp-chat`. Same `<main>` root, no outer wrapper.
+
+Amass API contract, worked example, validation, kit conventions all apply identically.

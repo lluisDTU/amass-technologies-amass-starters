@@ -4,7 +4,7 @@ description: Use when building a weekly pipeline-monitoring digest for biotech c
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Pipeline Monitor
@@ -13,67 +13,33 @@ For competitive-intelligence analysts at biotech and pharma companies tracking a
 
 ---
 
-## Important — Lovable scaffold cleanup
+## Scaffold target — read FIRST
 
-**Before generating the page component**, the AI builder MUST verify there is NO leftover Lovable blank-app placeholder in the final JSX. Specifically, the page root must NOT contain:
+This starter is built on **TanStack Start + Vite + TanStack Router + TanStack Query** (the default for Lovable). The scaffold produces THREE TypeScript files; do NOT wrap them in any outer template, placeholder component, or blank-app `<div>`.
 
-- An outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app content
-- `<img data-lovable-blank-page-placeholder="REMOVE_THIS" src="https://cdn.gpteng.co/blank-app-v1.svg" ... />`
+For Next.js App Router users, see the Appendix at the bottom.
 
-If these are present from Lovable's default template, REMOVE them entirely. The real app's root element must be the page's only top-level wrapper. Leaving the placeholder wrapper in place produces malformed JSX (unclosed outer div) and the published deploy renders a generic error page instead of the app.
+### File 1: `src/lib/amass.server.ts` — server-only API client
 
----
-
-## What you build
-
-The user pastes a YAML sponsor watchlist (canonical sponsors + indication-cluster scope + last-check date). The handler issues a per-sponsor TrialCore search via `GET /records?query=<sponsor>&phase=...&minStartDate=<last_check>` to surface new Phase 2/3 trials since the last check. For each surfaced trial, it walks the trial→paper cross-core edge via `GET /records/{AMTC_}?include=referencesBiomedCore`, then per-paper resolves trust signals (`isRetracted`, `journalQualityJufo`, `citationCount`) via `GET /records/{AMBC_}`. The output is a Markdown digest grouped by sponsor with three sections: new trials, new papers, retraction-flagged citations — rendered inline as a 3-panel dashboard.
-
-The input surface is a single textarea accepting YAML. The empty state offers a Try-sample button that loads the verified SCLC-DLL3-2026Q2 watchlist verbatim. The output renders as a 3-panel dashboard with a Download Markdown digest button. During the per-sponsor + per-trial + per-paper fan-out, the UI shows a Cancel button and a progress indicator.
-
----
-
-## API contract — load-bearing, follow exactly
-
-### Endpoints used
-
-- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search returning new trials
-- `GET /api/v1/cores/trialcore/records/{amassId}?include=referencesBiomedCore` — fetch trial record with paper-side cross-core spine
-- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with trust signals (`isRetracted`, `journalQualityJufo`, `citationCount` are default fields; no `include` flag needed)
-
-### Auth + rate limit
-
-`Authorization: Bearer ${AMASS_API_KEY}` on every request. 60 requests / 60 seconds per user+org. On HTTP 429, read the `Retry-After` header and back off exponentially. On 401/403, surface the credential error directly — retry won't fix it.
-
-### Response envelope (CRITICAL)
-
-Every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming. The TrialCore search endpoint returns `{ "data": [...] }` (array of trial records, NOT lookup-result-shaped). Per-record GETs return `{ "data": {...} }` (single object).
-
-### Top-level errors
-
-Non-2xx HTTP response body: `{ "error": { "status": ..., "code": ..., "message": ... } }`. Throw with a message including the upstream `code` + `message`. The outer route handler's `try/catch` surfaces this as a mutation error inline — never let it propagate to the route-level error boundary.
-
-### TrialCore search ceiling
-
-The `limit` parameter caps at 300 records per query. Sponsors returning >300 results in a `query=<sponsor>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3` probe (without `minStartDate`) need their indication scope narrowed at onboarding before the weekly cron can run reliably.
-
----
-
-## Reference code
-
-### `lib/amass.ts` — server-only API client
-
-Drop this file in unchanged. Framework-agnostic. The `import "server-only"` enforces server-side-only usage at build time.
+The `.server.ts` filename enforces server-only. **Do NOT add `import "server-only"`** — it crashes Vite SSR.
 
 ```ts
-import "server-only";
+// src/lib/amass.server.ts
+// Server-only via .server.ts filename. DO NOT add `import "server-only"`.
+
+export type LookupResult = ReadonlyArray<{
+  input?: { pmid?: string; doi?: string; nctId?: string };
+  amassIds?: string[];
+  error?: { code?: string; message?: string };
+}>;
 
 export type Phase = "PHASE2" | "PHASE2_PHASE3" | "PHASE3";
 
 export interface TrialSearchOpts {
   phase?: ReadonlyArray<Phase>;
-  minStartDate?: string;   // ISO YYYY-MM-DD
+  minStartDate?: string; // ISO YYYY-MM-DD
   sponsorType?: string;
-  limit?: number;          // default 300, ceiling 300
+  limit?: number; // default 300, ceiling 300
 }
 
 class AmassClient {
@@ -121,18 +87,12 @@ class AmassClient {
     return this.req<unknown[]>("GET", `/api/v1/cores/trialcore/records?${params}`);
   };
 
-  getTrialRecord = (
-    amassId: string,
-    includes: ReadonlyArray<"referencesBiomedCore" | "outcomes" | "detailedDescription"> = [],
-  ) => {
+  getTrialRecord = (amassId: string, includes: ReadonlyArray<string> = []) => {
     const qs = includes.length ? `?${includes.map((i) => `include=${i}`).join("&")}` : "";
     return this.req<unknown>("GET", `/api/v1/cores/trialcore/records/${amassId}${qs}`);
   };
 
-  getBiomedRecord = (
-    amassId: string,
-    includes: ReadonlyArray<"fulltext" | "referencesTrialCore" | "references" | "citedBy"> = [],
-  ) => {
+  getBiomedRecord = (amassId: string, includes: ReadonlyArray<string> = []) => {
     const qs = includes.length ? `?${includes.map((i) => `include=${i}`).join("&")}` : "";
     return this.req<unknown>("GET", `/api/v1/cores/biomedcore/records/${amassId}${qs}`);
   };
@@ -145,22 +105,24 @@ export const getAmassClient = () =>
 export { AmassClient };
 ```
 
-### Server-side route handler
-
-Write the handler in your framework's preferred server-side shape (TanStack Start `createServerFn` OR Next.js `app/api/digest-run/route.ts`). The handler structure:
-
-1. Parse the input body with a zod `WatchlistSchema` (fields: `sponsors[]` of `{ canonical, aliases[] }`, `phases[]`, `last_check`, `watchlist_id`).
-2. For each canonical sponsor, run two TrialCore searches concurrently: one with `minStartDate=<last_check>` (the "new since last check" query), one without (the cardinality probe). Wrap the per-sponsor fan-out in `Promise.all`.
-3. For each surfaced trial in the "new" query result, call `getTrialRecord(amassId, ["referencesBiomedCore"])` to fetch the trial's paper-side cross-core spine. Deduplicate the union of `AMBC_` IDs across all trials.
-4. For each unique paper `AMBC_`, call `getBiomedRecord(amassId)` (no `include` — default fields cover trust signals). Wrap this fan-out in `withIdleTimeout(gen, 180_000)`.
-5. Assemble the 3-panel output: new trials (left), new papers (center), retraction-flagged citations (right — papers with `isRetracted=true`).
-6. Return `{ digest: {...}, errors: {...} }` as JSON. Include the Markdown digest body for direct download.
-
-**Critical:** wrap the entire handler body in `try { ... } catch (err) { ... }`. On TanStack Start, throw `new Error(err.message ?? "Digest run failed")` from the catch — TanStack Query surfaces it as `mutation.error.message`. On Next.js, return `Response.json({ error: ... }, { status: 500 })`. NEVER let an uncaught throw propagate to the route-level error boundary.
-
-### Idle-timeout helper
+### File 2: `src/lib/digest.functions.ts` — TanStack Start server function
 
 ```ts
+// src/lib/digest.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { getAmassClient } from "./amass.server";
+
+export const WatchlistSchema = z.object({
+  watchlist_id: z.string(),
+  sponsors: z.array(z.object({
+    canonical: z.string(),
+    aliases: z.array(z.string()).default([]),
+  })).min(1),
+  phases: z.array(z.enum(["PHASE2", "PHASE2_PHASE3", "PHASE3"])).default(["PHASE2", "PHASE2_PHASE3", "PHASE3"]),
+  last_check: z.string(), // ISO YYYY-MM-DD
+});
+
 async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000): AsyncGenerator<T> {
   while (true) {
     const timeout = new Promise<{ kind: "timeout" }>((r) =>
@@ -174,32 +136,207 @@ async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000):
     yield result.r.value;
   }
 }
+
+export const runDigest = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => WatchlistSchema.parse(input))
+  .handler(async ({ data }) => {
+    try {
+      const client = getAmassClient();
+
+      // Per-sponsor TrialCore search with minStartDate filter → array of new trial records.
+      const sponsorResults = await Promise.all(
+        data.sponsors.map(async (sponsor) => {
+          const trials = await client.searchTrialcore(sponsor.canonical, {
+            phase: data.phases,
+            minStartDate: data.last_check,
+          });
+          return { sponsor: sponsor.canonical, trials };
+        }),
+      );
+
+      // Per-trial cross-core walk: getTrialRecord with include=referencesBiomedCore → AMBC_ IDs.
+      const allAmbcIds = new Set<string>();
+      const trialToPapers = new Map<string, string[]>(); // amtcId → [ambcIds...]
+
+      async function* walkTrials() {
+        for (const { trials } of sponsorResults) {
+          for (const trial of trials) {
+            const amtcId = (trial as { amassId?: string }).amassId ?? "";
+            if (!amtcId) continue;
+            try {
+              const rec = (await client.getTrialRecord(amtcId, ["referencesBiomedCore"])) as Record<string, unknown>;
+              const refs = (rec["referencesBiomedCore"] as string[]) ?? [];
+              trialToPapers.set(amtcId, refs);
+              for (const ambc of refs) allAmbcIds.add(ambc);
+              yield { amtcId };
+            } catch (e) {
+              yield { amtcId, error: e instanceof Error ? e.message : String(e) };
+            }
+          }
+        }
+      }
+      for await (const _step of withIdleTimeout(walkTrials(), 180_000)) { /* progress */ }
+
+      // Per-paper resolution: trust signals from default fields.
+      const paperTrust = new Map<string, { isRetracted: boolean; jufo: number | null; cites: number | null }>();
+      async function* walkPapers() {
+        for (const ambcId of allAmbcIds) {
+          try {
+            const rec = (await client.getBiomedRecord(ambcId)) as Record<string, unknown>;
+            paperTrust.set(ambcId, {
+              isRetracted: Boolean(rec["isRetracted"]),
+              jufo: (rec["journalQualityJufo"] as number) ?? null,
+              cites: (rec["citationCount"] as number) ?? null,
+            });
+            yield { ambcId };
+          } catch (e) {
+            yield { ambcId, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+      for await (const _step of withIdleTimeout(walkPapers(), 180_000)) { /* progress */ }
+
+      // Assemble 3-panel digest
+      const newTrials = sponsorResults.flatMap(({ sponsor, trials }) =>
+        trials.map((t) => ({ sponsor, trial: t })),
+      );
+      const newPapers = Array.from(allAmbcIds).map((ambcId) => ({ ambcId, ...paperTrust.get(ambcId) }));
+      const retractionFlagged = newPapers.filter((p) => p.isRetracted);
+
+      return {
+        digest: { newTrials, newPapers, retractionFlagged, trialToPapers: Object.fromEntries(trialToPapers) },
+        errors: {},
+      };
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : "Digest run failed");
+    }
+  });
 ```
+
+### File 3: `src/routes/index.tsx` — TanStack Start route + page component
+
+The `component: Index` binding is REQUIRED. The root element is `<main>` — no outer wrapper.
+
+```tsx
+// src/routes/index.tsx
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { runDigest } from "@/lib/digest.functions";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Pipeline Monitor — Amass" },
+      { name: "description", content: "Weekly pipeline-monitoring digest for biotech CI analysts." },
+    ],
+  }),
+  component: Index, // ← REQUIRED. Without this, SSR fails.
+});
+
+function Index() {
+  const [yamlInput, setYamlInput] = useState("");
+  const digest = useServerFn(runDigest);
+  const mutation = useMutation({
+    mutationFn: async (yamlText: string) => {
+      // Parse YAML with js-yaml; pass to digest({ data: parsed })
+      throw new Error("Implement YAML parse + digest call here");
+    },
+  });
+
+  return (
+    <main className="min-h-screen bg-background text-foreground font-sans">
+      <header className="border-b border-border">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <h1 className="text-2xl font-extrabold tracking-tight">amass</h1>
+          <span className="text-xs text-muted-foreground font-mono">pipeline-monitor · v0.1</span>
+        </div>
+      </header>
+
+      <section className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+        {/* YAML textarea + Try-sample + Run digest + 3-panel dashboard (new trials / new papers / retraction-flagged) + Download Markdown digest */}
+      </section>
+    </main>
+  );
+}
+```
+
+---
+
+## What you build
+
+The user pastes a YAML sponsor watchlist. The handler issues a per-sponsor TrialCore search via `GET /records?query=<sponsor>&phase=...&minStartDate=<last_check>` to surface new Phase 2/3 trials since the last check. For each surfaced trial, it walks the trial→paper cross-core edge via `GET /records/{AMTC_}?include=referencesBiomedCore`, then per-paper resolves trust signals via `GET /records/{AMBC_}`. The output is a Markdown digest grouped by sponsor rendered as a 3-panel dashboard.
+
+Input surface: single YAML textarea. Empty state: Try-sample with the SCLC-DLL3-2026Q2 watchlist. Output: 3-panel dashboard + Download Markdown digest button. During fan-out: Cancel button + progress indicator.
+
+---
+
+## API contract — load-bearing, follow exactly
+
+### Endpoints used
+
+- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search
+- `GET /api/v1/cores/trialcore/records/{amassId}?include=referencesBiomedCore` — fetch trial record with paper-side cross-core spine
+- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record (default fields cover trust signals)
+
+### Auth + rate limit
+
+`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s rate limit. 429 → exponential backoff via `Retry-After`. 401/403 → surface directly.
+
+### Response envelope
+
+All endpoints return `{ "data": ... }` — unwrap before consuming. TrialCore search returns `{ "data": [...] }` (array of trial records). Per-record GETs return `{ "data": {...} }` (single object).
+
+### Top-level errors
+
+Non-2xx body: `{ "error": { "code": ..., "message": ... } }`. The reference code's `req<T>` throws with the upstream message; handler `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message`.
+
+### TrialCore search ceiling
+
+`limit` caps at 300 records. Sponsors returning ≥300 in a no-`minStartDate` probe (`query=<sponsor>&phase=...`) need their indication scope narrowed at onboarding.
 
 ---
 
 ## Worked example
 
-Use this verified watchlist in the empty-state Try-sample button. Render all live data from the Amass response — NEVER hardcode trial / paper metadata.
-
 - **Watchlist:** SCLC-DLL3-2026Q2
 - **Sponsors:** Amgen, Roche (canonical for Genentech), AbbVie, Boehringer Ingelheim, Harpoon Therapeutics
 - **Phases:** PHASE2, PHASE2_PHASE3, PHASE3
-- **last_check:** 2026-05-13 (one week prior to today)
+- **last_check:** 2026-05-13
 - **Expected trial anchor:** NCT05060016 (DeLLphi-301, Amgen) surfaces in the Amgen panel with `phase=PHASE2`
-- **Expected paper anchor:** PMID 37861218 (Ahn MJ et al. NEJM 2023) surfaces in the "new papers" center panel via the DeLLphi-301 cross-core walk
+- **Expected paper anchor:** PMID 37861218 (Ahn MJ et al. NEJM 2023) surfaces via DeLLphi-301 cross-core walk
 
-Try-sample tooltip: "SCLC-DLL3-2026Q2 — five sponsors tracking DLL3-targeted bispecifics in small-cell lung cancer." (Tarlatamab anchor set verified against PubMed + ClinicalTrials.gov + FDA approval letter at draft time)
+Try-sample tooltip: "SCLC-DLL3-2026Q2 — DLL3-targeted bispecifics in small-cell lung cancer." (Tarlatamab anchor set verified against PubMed + ClinicalTrials.gov + FDA approval letter at draft time)
+
+Sample YAML:
+
+```yaml
+watchlist_id: sclc-dll3-2026q2
+sponsors:
+  - canonical: Amgen
+    aliases: []
+  - canonical: Roche
+    aliases: [Genentech]
+  - canonical: AbbVie
+    aliases: []
+  - canonical: Boehringer Ingelheim
+    aliases: []
+  - canonical: Harpoon Therapeutics
+    aliases: []
+phases: [PHASE2, PHASE2_PHASE3, PHASE3]
+last_check: "2026-05-13"
+```
 
 ---
 
 ## Per-starter constraints
 
-- Sponsor-name canonicalisation onboarding step: issue a `GET /records?query=<raw sponsor name>&limit=300` probe and cluster returned `sponsorName` strings. Genentech maps to Roche (subsidiary with its own CT.gov string). Persist the analyst-confirmed canonical→aliases map into the watchlist YAML.
-- Sponsor cardinality probe: if a per-sponsor `query=<canonical>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3` (no `minStartDate`) returns ≥300 records, the limit ceiling is hit — the analyst must narrow the indication scope before the weekly run is reliable.
-- 3-panel dashboard structure: new trials (left), new papers via trial→paper cross-core walk (center), retraction-flagged citations (right). Don't collapse panels.
-- Markdown digest filename: `digest-<watchlist_id>-<YYYY-Wnn>.md` (ISO week number). The download button emits this file directly from the response payload.
-- v0.1 returns a single consolidated response per digest run. No digest-history append-only persistence in v0.1 (that's the primary extension path).
+- Sponsor-name canonicalisation: persist analyst-confirmed canonical→aliases map in the watchlist YAML. Genentech maps to Roche.
+- Sponsor cardinality probe: if `query=<canonical>&phase=PHASE2&phase=PHASE2_PHASE3&phase=PHASE3` (no `minStartDate`) returns ≥300 records, narrow the indication scope before the weekly run.
+- 3-panel dashboard: new trials (left), new papers via trial→paper cross-core walk (center), retraction-flagged citations (right). Do NOT collapse panels.
+- Markdown digest filename: `digest-<watchlist_id>-<YYYY-Wnn>.md` (ISO week number).
+- v0.1: single consolidated response per run. No digest-history persistence (extension path).
 
 ---
 
@@ -207,58 +344,84 @@ Try-sample tooltip: "SCLC-DLL3-2026Q2 — five sponsors tracking DLL3-targeted b
 
 **Visual:**
 - External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) render in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
-- Neutral, professional palette. shadcn-style design tokens or Tailwind defaults are fine — no marketing colors. Dark mode follows OS `prefers-color-scheme`; no toggle.
+- Neutral palette. shadcn-style tokens or Tailwind defaults. Dark mode follows OS `prefers-color-scheme`; no toggle.
 - Lucide React for icons.
 - Header: wordmark `amass` in Inter weight 800 at top-left.
 
 **UX behavior:**
 - Empty state shows a Try-sample button that loads the worked example identifiers verbatim.
 - Long-running fan-outs render an analyst-visible Cancel button + progress indicator.
-- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`; on stall, surface the error inline.
-- Per-row error rendering: invalid identifiers show the verbatim upstream error message on that one row. Errors NEVER crash the surface.
-- No `AskUserQuestion` to gate scaffolding on credentials — the standard env-var prompt covers `AMASS_API_KEY` at runtime.
+- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`.
+- Per-row error rendering: invalid identifiers show verbatim upstream error. Errors NEVER crash the surface.
+- No `AskUserQuestion` gating on credentials — env-var prompt covers `AMASS_API_KEY` at runtime.
 
-**Stack:**
-- TypeScript + React + a server-function-capable framework. Lovable defaults to TanStack Start; Next.js App Router is the alternative.
-- `lib/amass.ts` carries `import "server-only"` at the top. Never imported from a `"use client"` component.
-- `https://api.amass.tech` is hardcoded as the base URL in `lib/amass.ts`. Do NOT introduce an `AMASS_API_BASE_URL` env var.
-- Pin React 18.3.1, TypeScript 5.4.5, zod 3.23.8, lucide-react 0.453.0, server-only 0.0.1. Add framework packages on top.
-
-**Pre-publish cleanup (DO THIS — Lovable scaffolds may leave these in place):**
-- Strip ALL `data-lovable-blank-page-placeholder="REMOVE_THIS"` attributes.
-- Strip ALL `<img>` tags pointing at `cdn.gpteng.co`.
-- If Lovable left an outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app + a leftover placeholder image, REMOVE the outer wrapper entirely so the real app's root `<div>` is the only top-level returned element.
+**Stack (TanStack Start + Vite — Lovable's default):**
+- Server-only files use `.server.ts` filename (`src/lib/amass.server.ts`). DO NOT add `import "server-only"` — crashes Vite SSR.
+- Server functions: `src/lib/<name>.functions.ts` with `createServerFn({ method: "POST" }).inputValidator(...).handler(...)`.
+- Route + page: `src/routes/index.tsx` with `createFileRoute("/")({ head, component: Index })`. The `component` binding is REQUIRED.
+- `https://api.amass.tech` hardcoded in the API client. NO `AMASS_API_BASE_URL` env var.
 
 ---
 
 ## Validation
 
-After `npm run dev`, verify in order:
+After `npm run dev`:
 
-1. **Empty state** renders cleanly with the Try-sample button visible. Browser console clean (no errors / warnings about `data-lovable-blank-page-placeholder` or unclosed JSX).
-2. **Try sample** loads the SCLC-DLL3-2026Q2 watchlist and runs end-to-end. The new-trials-this-week panel populates with at least DeLLphi-301 (NCT05060016, Phase 2) under Amgen; the new-papers panel populates from the trial→paper cross-core walk; the retraction-flagged panel populates honestly (may be empty if no walked paper has `isRetracted=true`).
-3. **Invalid sponsor test:** add a fictional sponsor name to the watchlist YAML (e.g. `Nonexistent Pharma Inc`) and re-run. The corresponding per-sponsor block renders with zero new trials and a note explaining the empty result. Page does NOT crash; other sponsors continue to populate.
-4. **Download Markdown digest** click emits `digest-sclc-dll3-2026q2-<YYYY-Wnn>.md` with per-sponsor sections containing trial cards and paper cards rendered correctly.
+1. **Empty state** renders the `<main>` root + amass wordmark + YAML textarea + Try-sample. Console clean (no errors / placeholder warnings / `import "server-only"` crashes).
+2. **Try sample** loads SCLC-DLL3-2026Q2 watchlist. New-trials panel populates with at least DeLLphi-301 (NCT05060016) under Amgen. New-papers panel populates from cross-core walks. Retraction-flagged panel populates honestly.
+3. **Invalid sponsor test:** add `Nonexistent Pharma Inc` to the watchlist. Its per-sponsor block renders with zero new trials + a note explaining empty result. Page does NOT crash.
+4. **Download Markdown digest** emits `digest-sclc-dll3-2026q2-<YYYY-Wnn>.md` with per-sponsor sections.
 
 ---
 
 ## Hand-off
 
-Build, lint, typecheck must pass. Apply the Pre-publish cleanup steps from Kit conventions above.
+Build, lint, typecheck must pass.
 
-**Credentials:** get your `AMASS_API_KEY` from https://platform.amass.tech and add it to `.env`.
-
-To run: `npm run dev`.
+**Credentials:** get `AMASS_API_KEY` from https://platform.amass.tech and add to `.env`. Run `npm run dev`.
 
 **Want to extend it?**
-- Add digest-history append-only persistence — week-over-week diff in the dashboard itself, surfacing newly-added trials vs the previous week.
-- Wire to a Slack channel or email distribution list as an MCP slash-command, so the weekly digest delivers itself.
-- Add modality-cluster scoping (e.g., "DLL3-targeted bispecifics in SCLC" as a saved indication query) for cross-sponsor competitive analysis.
+- Add digest-history append-only persistence — week-over-week diff in the dashboard.
+- Wire to Slack / email distribution as an MCP slash-command.
+- Add modality-cluster scoping (e.g., "DLL3-targeted bispecifics in SCLC") as a saved indication query.
 
-Questions? Join the Amass Developer Community on Discord: https://discord.com/invite/sEGaBHMhWa.
+Discord: https://discord.com/invite/sEGaBHMhWa.
 
 ---
 
 ## License
 
 Apache-2.0. Copyright 2026 Amass Technologies. Source: https://github.com/lluisDTU/amass-technologies-amass-starters.
+
+---
+
+## Appendix — Next.js App Router alternative
+
+For Claude Code / Cursor users or anyone forking for production with Next.js conventions:
+
+### `lib/amass.ts` (Next.js variant)
+
+Same code as `src/lib/amass.server.ts` above, with `import "server-only"` added at the top. Next.js's `server-only` package guards against client-bundle imports at build time. Required for Next.js; do NOT use it on TanStack Start.
+
+### `app/api/digest-run/route.ts`
+
+```ts
+import { getAmassClient } from "@/lib/amass";
+import { WatchlistSchema } from "@/lib/schemas";
+
+export async function POST(req: Request) {
+  try {
+    const watchlist = WatchlistSchema.parse(await req.json());
+    // ... identical digest logic from runDigest's .handler() above ...
+    return Response.json({ digest });
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : "Digest run failed" }, { status: 500 });
+  }
+}
+```
+
+### `app/page.tsx`
+
+`"use client"` page POSTing to `/api/digest-run`. Same UI as the TanStack Start variant — single `<main>` root, no outer wrapper.
+
+The Amass API contract, worked example, validation, and kit conventions apply identically.

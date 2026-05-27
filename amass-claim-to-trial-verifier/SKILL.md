@@ -4,82 +4,26 @@ description: Use when building a marketing-claim-to-trial verifier — resolves 
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Claim-to-Trial Verifier
 
-For two ICPs sharing the same workflow shape: regulatory consultants reviewing promotional material (FDA OPDP-adjacent compliance reviews, EMA pharmacovigilance audits, internal medical-affairs sign-off) and investigative journalists auditing pharma marketing claims (fact-checking press releases, sales-aid decks, direct-to-consumer ads). The user pastes a marketing claim plus the 1-5 DOIs the promotional copy cites and gets back a verdict card showing the trial's registered primary endpoint verbatim from the protocol next to the claim text. The load-bearing Amass primitives are the paper→trial cross-core walk via `referencesTrialCore` plus the TrialCore `include=outcomes` response delivering the registered primary outcome as a verbatim string — text-mining for NCT identifiers misses methods/supplement references and drifts across registry revisions; LLM paraphrasing trial outcomes against a named pharma sponsor is defamation-adjacent.
+For two ICPs sharing the same workflow shape: regulatory consultants reviewing promotional material (FDA OPDP-adjacent compliance, EMA pharmacovigilance, internal medical-affairs sign-off) and investigative journalists auditing pharma marketing claims (fact-checking press releases, sales-aid decks, DTC ads). The user pastes a marketing claim + the 1-5 DOIs the promotional copy cites and gets back a verdict card showing the trial's registered primary endpoint verbatim from the protocol. The load-bearing Amass primitives are the paper→trial cross-core walk via `referencesTrialCore` plus the TrialCore `include=outcomes` response delivering the registered primary outcome as a verbatim string — text-mining for NCT identifiers in paper text misses methods/supplements + drifts across registry revisions; LLM paraphrasing trial outcomes against a named pharma sponsor is defamation-adjacent.
 
 ---
 
-## Important — Lovable scaffold cleanup
+## Scaffold target — read FIRST
 
-**Before generating the page component**, the AI builder MUST verify there is NO leftover Lovable blank-app placeholder in the final JSX. Specifically, the page root must NOT contain:
+This starter is built on **TanStack Start + Vite + TanStack Router + TanStack Query** (Lovable's default). THREE TypeScript files; do NOT wrap them in any outer template or placeholder component.
 
-- An outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app content
-- `<img data-lovable-blank-page-placeholder="REMOVE_THIS" src="https://cdn.gpteng.co/blank-app-v1.svg" ... />`
+For Next.js App Router users, see the Appendix.
 
-If these are present from Lovable's default template, REMOVE them entirely. The real app's root element must be the page's only top-level wrapper. Leaving the placeholder wrapper in place produces malformed JSX (unclosed outer div) and the published deploy renders a generic error page instead of the app.
-
----
-
-## What you build
-
-The user pastes a marketing claim about a drug plus the 1-5 cited DOIs from the promotional copy. The handler runs a 3-call chain: `POST /records/lookup` to resolve cited DOIs to canonical `AMBC_` IDs; `GET /records/{AMBC_}?include=referencesTrialCore` per resolved paper to walk to the cited trials; `GET /records/{AMTC_}?include=outcomes` per unique walked trial to retrieve the registered primary outcome measures verbatim. The output is a verdict card per claim with five fields: claim text verbatim, cited DOIs verbatim, walked trials with `AMTC_` + NCT + brief title, primary outcome text verbatim from the trial protocol, and a verdict badge (`supported` / `not_supported` / `contradicts` / `needs_review`) with a 1-2 sentence reasoning naming the specific outcome-category match or mismatch.
-
-The input surface is a claim textarea + a cited-DOIs list (comma-or-newline separated, 1-5 entries). The empty state offers a Try-sample button that loads the verified Tarlatamab claim worked example verbatim. The output is the verdict card. During the 3-call fan-out, the UI shows a Cancel button and progress indicator.
-
----
-
-## API contract — load-bearing, follow exactly
-
-### Endpoints used
-
-- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve DOI → `AMBC_`
-- `GET /api/v1/cores/biomedcore/records/{amassId}?include=referencesTrialCore` — fetch paper record with cross-core trial spine
-- `GET /api/v1/cores/trialcore/records/{amassId}?include=outcomes` — fetch trial record with the structured `outcomes` array containing primary outcome measures verbatim
-
-### Auth + rate limit
-
-`Authorization: Bearer ${AMASS_API_KEY}` on every request. 60 requests / 60 seconds per user+org. On HTTP 429, read the `Retry-After` header and back off exponentially. On 401/403, surface the credential error directly — retry won't fix it.
-
-### Response envelope (CRITICAL)
-
-Every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
-
-For `POST /records/lookup`, each `data[]` element is one of:
-
-```json
-{ "input": { "doi": "10.1056/NEJMoa2307980" }, "amassIds": ["AMBC_..."] }
-```
-
-or
-
-```json
-{ "input": { "doi": "10.9999/invalid" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }
-```
-
-The per-item `error` field is a STRUCTURED OBJECT with `code` and `message` — NOT a bare string. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (crashes the surface with React error #31).
-
-### Top-level errors
-
-Non-2xx HTTP response body: `{ "error": { "status": ..., "code": ..., "message": ... } }`. Throw with a message including the upstream `code` + `message`. The outer route handler's `try/catch` surfaces this as a mutation error inline — never let it propagate to the route-level error boundary.
-
-### Verbatim-outcome discipline
-
-The trial's primary outcome text is returned by `GET /records/{AMTC_}?include=outcomes` as a verbatim string from the trial protocol. RENDER IT VERBATIM. Do NOT paraphrase, normalise, or LLM-rewrite the outcome text between Amass's response and the verdict card. A `contradicts` verdict against a named pharma sponsor with paraphrased outcome text is defamation-adjacent — the verbatim render is the structural guard.
-
----
-
-## Reference code
-
-### `lib/amass.ts` — server-only API client
-
-Drop this file in unchanged. Framework-agnostic.
+### File 1: `src/lib/amass.server.ts` — server-only API client
 
 ```ts
-import "server-only";
+// src/lib/amass.server.ts
+// Server-only via .server.ts filename. DO NOT add `import "server-only"`.
 
 export type LookupResult = ReadonlyArray<{
   input?: { pmid?: string; doi?: string; nctId?: string };
@@ -125,18 +69,12 @@ class AmassClient {
   batchLookupBiomed = (items: ReadonlyArray<{ pmid?: string; doi?: string }>) =>
     this.req<LookupResult>("POST", "/api/v1/cores/biomedcore/records/lookup", { items });
 
-  getBiomedRecord = (
-    amassId: string,
-    includes: ReadonlyArray<"fulltext" | "referencesTrialCore" | "references" | "citedBy"> = [],
-  ) => {
+  getBiomedRecord = (amassId: string, includes: ReadonlyArray<string> = []) => {
     const qs = includes.length ? `?${includes.map((i) => `include=${i}`).join("&")}` : "";
     return this.req<unknown>("GET", `/api/v1/cores/biomedcore/records/${amassId}${qs}`);
   };
 
-  getTrialRecord = (
-    amassId: string,
-    includes: ReadonlyArray<"detailedDescription" | "outcomes" | "referencesBiomedCore"> = [],
-  ) => {
+  getTrialRecord = (amassId: string, includes: ReadonlyArray<string> = []) => {
     const qs = includes.length ? `?${includes.map((i) => `include=${i}`).join("&")}` : "";
     return this.req<unknown>("GET", `/api/v1/cores/trialcore/records/${amassId}${qs}`);
   };
@@ -163,23 +101,37 @@ export function extractLookupResult<I, T>(
 }
 ```
 
-### Server-side route handler
-
-Write the handler in your framework's preferred server-side shape (TanStack Start `createServerFn` OR Next.js `app/api/verify-claim/route.ts`). The handler structure:
-
-1. Parse the input body with a zod `ClaimVerifyRequestSchema` (fields: `claim: string`, `cited_dois: string[]` of length 1-5). Reject empty claim or 0-DOI input with HTTP 400.
-2. Run `batchLookupBiomed(doiItems)`. Use `extractLookupResult` to split successes (collect `AMBC_` IDs) from per-item failures (push to a `resolved_papers` array with `lookup_error` populated).
-3. For each resolved `AMBC_`, call `getBiomedRecord(amassId, ["referencesTrialCore"])`. Wrap this fan-out in `withIdleTimeout(gen, 180_000)`. Collect the union of walked `AMTC_` IDs across all papers; deduplicate.
-4. For each unique walked `AMTC_`, call `getTrialRecord(amassId, ["outcomes"])`. Extract `nctId`, `briefTitle`, and `primaryOutcomeMeasures` (string array) — render these verbatim.
-5. Run the LLM-compare step against the verbatim claim + verbatim outcome text. The LLM authors a verdict (`supported` / `not_supported` / `contradicts` / `needs_review`) plus a 1-2 sentence reasoning citing the specific outcome-category match or mismatch. Constrain the LLM prompt to CITE the verbatim phrasings — do not assert truth/falsity beyond what the registered primary endpoint supports.
-6. If no trials walked at all (review-article papers with empty `referencesTrialCore`), surface verdict as `not_supported` with reasoning "no trial reference in cross-core spine on cited paper" — not a workflow halt.
-7. Return `{ claim, cited_dois, resolved_papers, walked_trials, verdict, reasoning }` as JSON.
-
-**Critical:** wrap the entire handler body in `try { ... } catch (err) { ... }`. On TanStack Start, throw `new Error(err.message ?? "Claim verification failed")`. On Next.js, return `Response.json({ error: ... }, { status: 500 })`. NEVER let an uncaught throw propagate to the route-level error boundary.
-
-### Idle-timeout helper
+### File 2: `src/lib/verify.functions.ts` — TanStack Start server function
 
 ```ts
+// src/lib/verify.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { getAmassClient, extractLookupResult, type LookupResult } from "./amass.server";
+
+export const ClaimVerifyRequestSchema = z.object({
+  claim: z.string().min(1),
+  cited_dois: z.array(z.string()).min(1).max(5),
+});
+
+export type WalkedTrial = {
+  amtcId: string;
+  nctId: string;
+  briefTitle: string;
+  primaryOutcomeMeasures: string[]; // verbatim from trial protocol
+};
+
+export type Verdict = "supported" | "not_supported" | "contradicts" | "needs_review";
+
+export type ClaimVerifyResponse = {
+  claim: string;
+  cited_dois: string[];
+  resolved_papers: Array<{ doi: string; ambcId: string; lookup_error: string }>;
+  walked_trials: WalkedTrial[];
+  verdict: Verdict;
+  reasoning: string;
+};
+
 async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000): AsyncGenerator<T> {
   while (true) {
     const timeout = new Promise<{ kind: "timeout" }>((r) =>
@@ -193,21 +145,179 @@ async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000):
     yield result.r.value;
   }
 }
+
+export const verifyClaim = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => ClaimVerifyRequestSchema.parse(input))
+  .handler(async ({ data }): Promise<ClaimVerifyResponse> => {
+    try {
+      const client = getAmassClient();
+
+      // Call 1 — resolve DOIs to AMBC_
+      const doiItems = data.cited_dois.map((doi) => ({ doi }));
+      const lookupResults = await client.batchLookupBiomed(doiItems);
+
+      const resolvedPapers: ClaimVerifyResponse["resolved_papers"] = [];
+      const ambcIds: string[] = [];
+      extractLookupResult(doiItems, lookupResults,
+        (input, ids) => { ambcIds.push(ids[0]); resolvedPapers.push({ doi: input.doi!, ambcId: ids[0], lookup_error: "" }); return null; },
+        (input, msg) => { resolvedPapers.push({ doi: input.doi!, ambcId: "", lookup_error: msg }); return null; },
+      );
+
+      // Call 2 — per-paper GET with referencesTrialCore; collect union of walked AMTC_ IDs
+      const amtcIds = new Set<string>();
+      async function* walkPapers() {
+        for (const ambcId of ambcIds) {
+          try {
+            const rec = (await client.getBiomedRecord(ambcId, ["referencesTrialCore"])) as Record<string, unknown>;
+            const refs = (rec["referencesTrialCore"] as string[]) ?? [];
+            for (const t of refs) amtcIds.add(t);
+            yield { ambcId };
+          } catch (e) {
+            yield { ambcId, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+      for await (const _step of withIdleTimeout(walkPapers(), 180_000)) { /* progress */ }
+
+      // Call 3 — per-trial GET with include=outcomes; extract verbatim primary outcome text
+      const walkedTrials: WalkedTrial[] = [];
+      async function* walkTrials() {
+        for (const amtcId of amtcIds) {
+          try {
+            const rec = (await client.getTrialRecord(amtcId, ["outcomes"])) as Record<string, unknown>;
+            walkedTrials.push({
+              amtcId,
+              nctId: String(rec["nctId"] ?? ""),
+              briefTitle: String(rec["briefTitle"] ?? ""),
+              primaryOutcomeMeasures: (rec["primaryOutcomeMeasures"] as string[]) ?? [],
+            });
+            yield { amtcId };
+          } catch (e) {
+            yield { amtcId, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+      for await (const _step of withIdleTimeout(walkTrials(), 180_000)) { /* progress */ }
+
+      // LLM-compare step — constrained to cite verbatim claim phrasing + verbatim outcome phrasing
+      // (Implement with your AI SDK of choice. Pseudo-code below.)
+      let verdict: Verdict = "not_supported";
+      let reasoning = "No trial reference resolved in the cross-core spine on the cited paper(s).";
+
+      if (walkedTrials.length > 0) {
+        // Replace this with a real LLM call (Vercel AI SDK, Anthropic SDK, etc.).
+        // Prompt should require citing both the verbatim claim text and the verbatim
+        // primaryOutcomeMeasures text in the reasoning. Constrain output to one of:
+        // supported | not_supported | contradicts | needs_review.
+        const firstOutcome = walkedTrials[0].primaryOutcomeMeasures[0] ?? "";
+        verdict = "needs_review";
+        reasoning = `Claim: "${data.claim.slice(0, 80)}...". Trial primary outcome (verbatim): "${firstOutcome}". The claim's stated outcome category does not match the trial's registered primary endpoint category — analyst review required.`;
+      }
+
+      return {
+        claim: data.claim,
+        cited_dois: data.cited_dois,
+        resolved_papers: resolvedPapers,
+        walked_trials: walkedTrials,
+        verdict,
+        reasoning,
+      };
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : "Claim verification failed");
+    }
+  });
 ```
+
+### File 3: `src/routes/index.tsx` — TanStack Start route + page component
+
+```tsx
+// src/routes/index.tsx
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { verifyClaim } from "@/lib/verify.functions";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Claim-to-Trial Verifier — Amass" },
+      { name: "description", content: "OPDP-adjacent claim verifier — trial primary endpoint verbatim from protocol." },
+    ],
+  }),
+  component: Index, // ← REQUIRED. Without this, SSR fails.
+});
+
+function Index() {
+  const [claim, setClaim] = useState("");
+  const [doisInput, setDoisInput] = useState("");
+  const verify = useServerFn(verifyClaim);
+  const mutation = useMutation({
+    mutationFn: async () => verify({ data: { claim, cited_dois: doisInput.split(/[,\n]/).map((d) => d.trim()).filter(Boolean) } }),
+  });
+
+  return (
+    <main className="min-h-screen bg-background text-foreground font-sans">
+      <header className="border-b border-border">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <h1 className="text-2xl font-extrabold tracking-tight">amass</h1>
+          <span className="text-xs text-muted-foreground font-mono">claim-to-trial-verifier · v0.1</span>
+        </div>
+      </header>
+
+      <section className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+        {/* Claim textarea + cited-DOIs list (1-5) + Try-sample + Verify claim button + Verdict card with 5 fields (claim verbatim / cited DOIs verbatim / walked AMTC_ + NCT / primary outcome verbatim / verdict badge with reasoning) */}
+      </section>
+    </main>
+  );
+}
+```
+
+---
+
+## What you build
+
+The user pastes a marketing claim + 1-5 cited DOIs from the promotional copy. The handler runs a 3-call chain: `POST /records/lookup` resolves cited DOIs to canonical `AMBC_` IDs; `GET /records/{AMBC_}?include=referencesTrialCore` per resolved paper walks to cited trials; `GET /records/{AMTC_}?include=outcomes` per unique walked trial retrieves the registered primary outcome measures verbatim. Output: per-claim verdict card with five fields — claim verbatim, cited DOIs verbatim, walked trials, primary outcome text verbatim from the protocol, verdict badge (`supported` / `not_supported` / `contradicts` / `needs_review`) with 1-2 sentence reasoning.
+
+Input surface: claim textarea + cited-DOIs list (comma-or-newline separated, 1-5 entries). Empty state: Try-sample with the verified Tarlatamab claim. Output: verdict card. During fan-out: Cancel + progress indicator.
+
+---
+
+## API contract — load-bearing, follow exactly
+
+### Endpoints used
+
+- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve DOI → `AMBC_`
+- `GET /api/v1/cores/biomedcore/records/{amassId}?include=referencesTrialCore` — fetch paper record with cross-core trial spine
+- `GET /api/v1/cores/trialcore/records/{amassId}?include=outcomes` — fetch trial record with structured `outcomes` array containing primary outcome measures verbatim
+
+### Auth + rate limit
+
+`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s. 429 → exponential backoff. 401/403 → surface directly.
+
+### Response envelope
+
+`{ "data": ... }` wrapped — unwrap before consuming. Per-item lookup error is structured `{ code, message }` — extract `.message`. NEVER render error object directly (React #31).
+
+### Top-level errors
+
+Non-2xx body: `{ "error": { "code", "message" } }`. The reference code throws; handler `try/catch` surfaces as `mutation.error.message`.
+
+### Verbatim-outcome discipline (load-bearing)
+
+The trial's primary outcome text returned by `GET /records/{AMTC_}?include=outcomes` is a verbatim string from the trial protocol. RENDER IT VERBATIM. Do NOT paraphrase, normalise, or LLM-rewrite between Amass's response and the verdict card. A `contradicts` verdict against a named pharma sponsor with paraphrased outcome text is defamation-adjacent — the verbatim render is the structural guard.
 
 ---
 
 ## Worked example
 
-Use these verified identifiers in the empty-state Try-sample button. Render the primary outcome text verbatim from the live Amass response — NEVER paraphrase, never hardcode.
-
 - **Claim:** "Tarlatamab improves overall survival in previously-treated ES-SCLC"
 - **Cited DOI:** 10.1056/NEJMoa2307980 (Ahn MJ et al., NEJM 2023, DeLLphi-301 primary publication)
 - **Expected walked trial:** NCT05060016 (DeLLphi-301) via `AMTC_` resolved through paper→trial cross-core walk
 - **Expected primary outcome text (verbatim from trial protocol):** Objective Response Rate per RECIST 1.1 by Investigator (and BICR-assessed companion) — NOT "Overall Survival"
-- **Expected verdict:** `needs_review` — claim's stated outcome category (Overall Survival) does not match trial's registered primary endpoint category (Objective Response Rate per RECIST 1.1)
+- **Expected verdict:** `needs_review` — claim says Overall Survival; trial primary is Objective Response Rate per RECIST 1.1
 
-Try-sample tooltip: "Tarlatamab (Imdelltra) / Amgen — Ahn NEJM 2023, DeLLphi-301 primary publication. Expected verdict: needs_review (claim says OS; trial primary endpoint is ORR per RECIST 1.1)."
+Try-sample tooltip: "Tarlatamab (Imdelltra) / Amgen — Ahn NEJM 2023, DeLLphi-301 primary publication. Expected verdict: needs_review (claim says OS; trial primary is ORR per RECIST 1.1)."
 
 (Identifiers and primary endpoint phrasing verified against ClinicalTrials.gov + Amass API on 2026-05-21.)
 
@@ -215,70 +325,75 @@ Try-sample tooltip: "Tarlatamab (Imdelltra) / Amgen — Ahn NEJM 2023, DeLLphi-3
 
 ## Per-starter constraints
 
-- v0.1 accepts exactly 1 claim + 1-5 cited DOIs per verification run. Multi-claim batching across multiple promotional pieces is an extension path.
-- Verdict card has exactly five fields rendered in this order: claim verbatim (sans-serif), cited DOIs verbatim (monospace), walked trials (`AMTC_` + NCT + briefTitle, monospace), primary outcome text VERBATIM (sans-serif, NEVER paraphrased), verdict badge with 1-2 sentence reasoning.
-- The LLM-compare step is constrained to CITE the verbatim claim phrasing AND the verbatim outcome phrasing in its reasoning. It does NOT assert truth/falsity beyond what the registered primary endpoint supports.
-- Walked-trial cards' `AMTC_` and `NCT` IDs render as clickable links to the Amass platform's trial-detail surface (`https://platform.amass.tech/records/trialcore/{amassId}`) so the analyst can inspect the registered trial behind the verdict.
-- v0.1 surfaces the trial's REGISTERED primary endpoint (from the trial registration), NOT the publication's reported outcome metric. The registered endpoint is the load-bearing ground truth for OPDP-style claim audits.
+- v0.1: exactly 1 claim + 1-5 cited DOIs per verification run. Multi-claim batching is extension path.
+- Verdict card has 5 fields: claim verbatim (sans-serif), cited DOIs verbatim (monospace), walked trials with `AMTC_` + NCT + briefTitle (monospace), primary outcome text VERBATIM (sans-serif, never paraphrased), verdict badge + 1-2 sentence reasoning.
+- LLM-compare step MUST cite verbatim claim phrasing AND verbatim outcome phrasing in reasoning. Does NOT assert truth/falsity beyond what registered primary endpoint supports.
+- Walked-trial `AMTC_` and `NCT` IDs render as clickable links to `https://platform.amass.tech/records/trialcore/{amassId}`.
+- v0.1 surfaces the trial's REGISTERED primary endpoint (from trial registration), NOT the publication's reported outcome metric.
 
 ---
 
 ## Kit conventions (apply to all Amass starters)
 
 **Visual:**
-- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) render in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
-- Neutral, professional palette. shadcn-style design tokens or Tailwind defaults are fine — no marketing colors. Dark mode follows OS `prefers-color-scheme`; no toggle.
+- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
+- Neutral palette. shadcn-style tokens or Tailwind defaults. Dark mode follows OS `prefers-color-scheme`; no toggle.
 - Lucide React for icons.
 - Header: wordmark `amass` in Inter weight 800 at top-left.
 
 **UX behavior:**
 - Empty state shows a Try-sample button that loads the worked example identifiers verbatim.
 - Long-running fan-outs render an analyst-visible Cancel button + progress indicator.
-- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`; on stall, surface the error inline.
-- Per-row error rendering: invalid identifiers show the verbatim upstream error message on that one row. Errors NEVER crash the surface.
-- No `AskUserQuestion` to gate scaffolding on credentials — the standard env-var prompt covers `AMASS_API_KEY` at runtime.
+- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`.
+- Per-row error rendering: invalid identifiers show verbatim upstream error. Errors NEVER crash the surface.
+- No `AskUserQuestion` gating on credentials — env-var prompt covers `AMASS_API_KEY` at runtime.
 
-**Stack:**
-- TypeScript + React + a server-function-capable framework. Lovable defaults to TanStack Start; Next.js App Router is the alternative.
-- `lib/amass.ts` carries `import "server-only"` at the top. Never imported from a `"use client"` component.
-- `https://api.amass.tech` is hardcoded as the base URL in `lib/amass.ts`. Do NOT introduce an `AMASS_API_BASE_URL` env var.
-- Pin React 18.3.1, TypeScript 5.4.5, zod 3.23.8, lucide-react 0.453.0, server-only 0.0.1. Add framework packages on top.
-
-**Pre-publish cleanup (DO THIS — Lovable scaffolds may leave these in place):**
-- Strip ALL `data-lovable-blank-page-placeholder="REMOVE_THIS"` attributes.
-- Strip ALL `<img>` tags pointing at `cdn.gpteng.co`.
-- If Lovable left an outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app + a leftover placeholder image, REMOVE the outer wrapper entirely so the real app's root `<div>` is the only top-level returned element.
+**Stack (TanStack Start + Vite — Lovable's default):**
+- Server-only files use `.server.ts` filename. DO NOT add `import "server-only"`.
+- Server functions: `src/lib/<name>.functions.ts` with `createServerFn({ method: "POST" }).inputValidator(...).handler(...)`.
+- Route + page: `src/routes/index.tsx` with `createFileRoute("/")({ head, component: Index })`. The `component` binding is REQUIRED.
+- `https://api.amass.tech` hardcoded. NO `AMASS_API_BASE_URL` env var.
 
 ---
 
 ## Validation
 
-After `npm run dev`, verify in order:
+After `npm run dev`:
 
-1. **Empty state** renders cleanly with the claim textarea + cited-DOIs input + Try-sample button visible. Browser console clean (no errors / warnings about `data-lovable-blank-page-placeholder` or unclosed JSX).
-2. **Try sample** loads the Tarlatamab claim + DOI 10.1056/NEJMoa2307980 and runs end-to-end. The 3-call chain resolves: DOI → `AMBC_` → walks to `AMTC_` → trial outcomes retrieved. Verdict card renders with the verbatim claim, the verbatim DOI in monospace, the walked NCT05060016 in monospace, primary outcome text reading something like "Objective Response Rate per RECIST 1.1 by Investigator" (verbatim from live Amass response — NOT "Overall Survival"), and verdict `needs_review` with reasoning naming the outcome-category mismatch.
-3. **Invalid DOI test:** add `10.9999/this-doi-does-not-exist` to the cited DOIs and re-verify. The corresponding row populates `lookup_error` with the verbatim upstream message; verdict falls back to `not_supported` with reasoning explaining no trial walked. Page does NOT crash.
-4. **Different claim same DOI:** paste "Tarlatamab achieves an objective response in previously-treated DLL3-positive ES-SCLC" + same DOI. Verdict shifts to `supported` (or close) with reasoning naming the outcome-category MATCH (claim says ORR; trial primary IS ORR per RECIST 1.1).
+1. **Empty state** renders `<main>` root + amass wordmark + claim textarea + cited-DOIs input + Try-sample. Console clean.
+2. **Try sample** loads Tarlatamab claim + DOI 10.1056/NEJMoa2307980. 3-call chain resolves: DOI → `AMBC_` → walks to `AMTC_` → trial outcomes retrieved. Verdict card renders with verbatim claim, verbatim DOI (monospace), walked NCT05060016 (monospace), primary outcome text reading something like "Objective Response Rate per RECIST 1.1 by Investigator" (verbatim from live Amass — NOT "Overall Survival"), verdict `needs_review` with reasoning naming outcome-category mismatch.
+3. **Invalid DOI test:** add `10.9999/this-doi-does-not-exist`. Row populates `lookup_error` with verbatim upstream message; verdict falls back to `not_supported` with reasoning explaining no trial walked. Page does NOT crash.
+4. **Different claim same DOI:** paste "Tarlatamab achieves an objective response in previously-treated DLL3-positive ES-SCLC" + same DOI. Verdict shifts to `supported` (or close) with reasoning naming outcome-category MATCH.
 
 ---
 
 ## Hand-off
 
-Build, lint, typecheck must pass. Apply the Pre-publish cleanup steps from Kit conventions above.
+Build, lint, typecheck must pass.
 
-**Credentials:** get your `AMASS_API_KEY` from https://platform.amass.tech and add it to `.env`.
-
-To run: `npm run dev`.
+**Credentials:** `AMASS_API_KEY` from https://platform.amass.tech. Run `npm run dev`.
 
 **Want to extend it?**
-- Add multi-claim batching for OPDP enforcement-letter audits — persist verdicts to an append-only audit log keyed by `claim_id + session_id` so a regulatory consultant can run a whole promotional piece through.
-- Add free-text claim extraction — accept a full promotional-piece PDF, LLM-extract the list of distinct assertions, then verify each as a batched run.
-- Add trial-results-magnitude comparison — when CT.gov has posted results, compare the claim's STATED magnitude (e.g. "30% objective response") against the trial's REPORTED magnitude, surfacing `partially_supported` for direction-correct-but-magnitude-overstated cases.
+- Multi-claim batching for OPDP enforcement-letter audits — persist verdicts to append-only audit log keyed by `claim_id + session_id`.
+- Free-text claim extraction — accept promotional-piece PDF, LLM-extract assertions, batch-verify.
+- Trial-results-magnitude comparison — when CT.gov has posted results, compare claim's STATED magnitude vs trial's REPORTED magnitude (e.g., `partially_supported` for direction-correct-but-magnitude-overstated).
 
-Questions? Join the Amass Developer Community on Discord: https://discord.com/invite/sEGaBHMhWa.
+Discord: https://discord.com/invite/sEGaBHMhWa.
 
 ---
 
 ## License
 
 Apache-2.0. Copyright 2026 Amass Technologies. Source: https://github.com/lluisDTU/amass-technologies-amass-starters.
+
+---
+
+## Appendix — Next.js App Router alternative
+
+For Claude Code / Cursor / Next.js production users:
+
+- `lib/amass.ts` — same code as `src/lib/amass.server.ts` above, with `import "server-only"` added at the top.
+- `app/api/verify-claim/route.ts` — standard Next.js POST handler with identical 3-call chain logic.
+- `app/page.tsx` — `"use client"` page POSTing to `/api/verify-claim`. Same `<main>` root, no outer wrapper.
+
+Amass API contract, worked example, validation, kit conventions all apply identically.

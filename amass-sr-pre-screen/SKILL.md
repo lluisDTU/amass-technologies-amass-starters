@@ -4,81 +4,28 @@ description: Use when building a PRISMA pre-screen credibility-filter for system
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # SR Pre-Screen Credibility Filter
 
-For systematic-review researchers running PRISMA 2020 — Cochrane groups, SR-as-a-service consultancies, academic teams. The user pastes a curated PMID dump from the upstream search step (typically ~5,000 PMIDs from PubMed + Embase + CENTRAL + Scopus) and gets back a Rayyan/Covidence-importable RIS file containing only the ~100-500 papers that pass credibility thresholds (JuFo journal-quality tier, retraction flag, citation count). The load-bearing Amass primitives are the trust-filter conjunction on every paper record (`isRetracted` + `journalQualityJufo` + `citationCount` all default fields) plus per-item-error semantics on batch lookup — competitor stacks require Web of Science + Scopus + Retraction Watch + JuFo-table licensing to assemble equivalent signals.
+For systematic-review researchers running PRISMA 2020 — Cochrane groups, SR-as-a-service consultancies, academic teams. The user pastes a curated PMID dump from the upstream search step (typically ~5,000 PMIDs) and gets back a Rayyan/Covidence-importable RIS file containing only the ~100-500 papers that pass credibility thresholds (JuFo journal-quality tier, retraction flag, citation count). The load-bearing Amass primitives are the trust-filter conjunction on every paper record (`isRetracted` + `journalQualityJufo` + `citationCount` all default fields) plus per-item-error semantics on batch lookup — competitor stacks require Web of Science + Scopus + Retraction Watch + JuFo-table licensing to assemble equivalent signals.
 
 ---
 
-## Important — Lovable scaffold cleanup
+## Scaffold target — read FIRST
 
-**Before generating the page component**, the AI builder MUST verify there is NO leftover Lovable blank-app placeholder in the final JSX. Specifically, the page root must NOT contain:
+This starter is built on **TanStack Start + Vite + TanStack Router + TanStack Query** (Lovable's default). THREE TypeScript files; do NOT wrap them in any outer template or placeholder component.
 
-- An outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app content
-- `<img data-lovable-blank-page-placeholder="REMOVE_THIS" src="https://cdn.gpteng.co/blank-app-v1.svg" ... />`
+For Next.js App Router users, see the Appendix.
 
-If these are present from Lovable's default template, REMOVE them entirely. The real app's root element must be the page's only top-level wrapper. Leaving the placeholder wrapper in place produces malformed JSX (unclosed outer div) and the published deploy renders a generic error page instead of the app.
+### File 1: `src/lib/amass.server.ts` — server-only API client
 
----
-
-## What you build
-
-The user pastes a PMID dump (one PMID per line, typical 1,000-5,000 rows) and configures credibility thresholds (`min_jufo`, `allow_retracted`, `min_citation_count`). The handler chunks the PMID list into ~100-item batches and runs `POST /records/lookup` concurrently across chunks. For each resolved canonical `AMBC_`, it calls `GET /records/{amassId}` (no `include` — `isRetracted`, `journalQualityJufo`, `citationCount` are default fields), then client-side filters against the configured thresholds. The output is a results table + two downloadable artifacts: a Rayyan/Covidence-importable RIS file containing only the included papers, and an audit-trail CSV with one row per submitted PMID showing why it was included or excluded.
-
-The input surface is a textarea for the PMID list + three threshold controls (JuFo dropdown 1-3, retraction toggle, citation count number input). The empty state offers a Try-sample button that loads ~10 illustrative GLP-1 receptor agonist PMIDs. The output is a paginated results table with download buttons. During the per-paper fan-out, the UI shows a Cancel button and a progress indicator.
-
----
-
-## API contract — load-bearing, follow exactly
-
-### Endpoints used
-
-- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID → `AMBC_` (chunked to ~100 items per request)
-- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default fields (covers `isRetracted` + `journalQualityJufo` + `citationCount` — do NOT pass `include` flags)
-
-### Auth + rate limit
-
-`Authorization: Bearer ${AMASS_API_KEY}` on every request. 60 requests / 60 seconds per user+org. On HTTP 429, read the `Retry-After` header and back off exponentially. On 401/403, surface the credential error directly — retry won't fix it.
-
-### Response envelope (CRITICAL)
-
-Every endpoint returns `{ "data": ... }` wrapped. Unwrap before consuming.
-
-For `POST /records/lookup`, each `data[]` element is one of:
-
-```json
-{ "input": { "pmid": "32109013" }, "amassIds": ["AMBC_..."] }
-```
-
-or
-
-```json
-{ "input": { "pmid": "99999999" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }
-```
-
-The per-item `error` field is a STRUCTURED OBJECT with `code` and `message` — NOT a bare string. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (crashes the surface with React error #31).
-
-### Top-level errors
-
-Non-2xx HTTP response body: `{ "error": { "status": ..., "code": ..., "message": ... } }`. Throw with a message including the upstream `code` + `message`. The outer route handler's `try/catch` surfaces this as a mutation error inline — never let it propagate to the route-level error boundary.
-
-### Lookup chunking
-
-The `items[]` array on `POST /records/lookup` accepts up to ~100 items per request (conservative ceiling pending upstream quantification). Chunk inputs above ~100 PMIDs into multiple concurrent lookup calls.
-
----
-
-## Reference code
-
-### `lib/amass.ts` — server-only API client
-
-Drop this file in unchanged. Framework-agnostic. The `import "server-only"` enforces server-side-only usage at build time.
+The `.server.ts` filename enforces server-only. **Do NOT add `import "server-only"`** — it crashes Vite SSR.
 
 ```ts
-import "server-only";
+// src/lib/amass.server.ts
+// Server-only via .server.ts filename. DO NOT add `import "server-only"`.
 
 export type LookupResult = ReadonlyArray<{
   input?: { pmid?: string; doi?: string; nctId?: string };
@@ -157,23 +104,35 @@ export function chunk<T>(arr: ReadonlyArray<T>, size: number): T[][] {
 }
 ```
 
-### Server-side route handler
-
-Write the handler in your framework's preferred server-side shape (TanStack Start `createServerFn` OR Next.js `app/api/pre-screen/route.ts`). The handler structure:
-
-1. Parse the input body with a zod `PreScreenSchema` (fields: `pmids[]`, `min_jufo`, `allow_retracted`, `min_citation_count`).
-2. Chunk the PMID list into 100-item batches via the `chunk` helper. Run all `batchLookupBiomed` calls concurrently via `Promise.all`.
-3. Use `extractLookupResult` on each chunk. Successes feed the per-paper fan-out; per-item failures populate `lookup_error` on that row.
-4. For each resolved `AMBC_`, call `getBiomedRecord(amassId)` (no `include`). Wrap this fan-out in `withIdleTimeout(gen, 180_000)`. Extract `isRetracted`, `journalQualityJufo`, `citationCount` from the returned record.
-5. Apply client-side threshold filter: include the paper if `(isRetracted === false || allow_retracted) && journalQualityJufo >= min_jufo && citationCount >= min_citation_count`.
-6. Assemble: results table rows, RIS file body (only included papers), audit CSV (all papers with `included_in_prescreen` boolean and replayed thresholds).
-7. Return `{ rows, ris, csv, summary: { total, resolved, included, excluded, lookup_errors } }` as JSON.
-
-**Critical:** wrap the entire handler body in `try { ... } catch (err) { ... }`. On TanStack Start, throw `new Error(err.message ?? "Pre-screen run failed")`. On Next.js, return `Response.json({ error: ... }, { status: 500 })`. NEVER let an uncaught throw propagate to the route-level error boundary.
-
-### Idle-timeout helper
+### File 2: `src/lib/prescreen.functions.ts` — TanStack Start server function
 
 ```ts
+// src/lib/prescreen.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { getAmassClient, extractLookupResult, chunk, type LookupResult } from "./amass.server";
+
+export const PreScreenSchema = z.object({
+  pmids: z.array(z.string()).min(1),
+  min_jufo: z.number().int().min(1).max(3).default(2),
+  allow_retracted: z.boolean().default(false),
+  min_citation_count: z.number().int().min(0).default(10),
+});
+
+export type AuditRow = {
+  pmid: string;
+  accessed_at: string;
+  AMBC_id: string;
+  isRetracted: string;
+  journalQualityJufo: string;
+  citationCount: string;
+  lookup_error: string;
+  included_in_prescreen: string;
+  threshold_min_jufo: string;
+  threshold_min_citation_count: string;
+  threshold_allow_retracted: string;
+};
+
 async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000): AsyncGenerator<T> {
   while (true) {
     const timeout = new Promise<{ kind: "timeout" }>((r) =>
@@ -187,18 +146,198 @@ async function* withIdleTimeout<T>(gen: AsyncGenerator<T>, maxIdleMs = 180_000):
     yield result.r.value;
   }
 }
+
+export const runPreScreen = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => PreScreenSchema.parse(input))
+  .handler(async ({ data }) => {
+    try {
+      const client = getAmassClient();
+      const accessed_at = new Date().toISOString();
+
+      // Chunk PMIDs to ~100 per batch lookup
+      const pmidItems = data.pmids.map((pmid) => ({ pmid }));
+      const chunks = chunk(pmidItems, 100);
+      const chunkResults = await Promise.all(chunks.map((c) => client.batchLookupBiomed(c)));
+      const lookupResults: LookupResult = chunkResults.flat() as LookupResult;
+
+      const rows: AuditRow[] = [];
+      const ambcToRow = new Map<string, number>();
+
+      extractLookupResult(pmidItems, lookupResults,
+        (input, ids) => {
+          const id = ids[0];
+          const idx = rows.push({
+            pmid: input.pmid!,
+            accessed_at,
+            AMBC_id: id,
+            isRetracted: "",
+            journalQualityJufo: "",
+            citationCount: "",
+            lookup_error: "",
+            included_in_prescreen: "false",
+            threshold_min_jufo: String(data.min_jufo),
+            threshold_min_citation_count: String(data.min_citation_count),
+            threshold_allow_retracted: String(data.allow_retracted),
+          }) - 1;
+          ambcToRow.set(id, idx);
+          return null;
+        },
+        (input, msg) => {
+          rows.push({
+            pmid: input.pmid!,
+            accessed_at,
+            AMBC_id: "",
+            isRetracted: "",
+            journalQualityJufo: "",
+            citationCount: "",
+            lookup_error: msg,
+            included_in_prescreen: "false",
+            threshold_min_jufo: String(data.min_jufo),
+            threshold_min_citation_count: String(data.min_citation_count),
+            threshold_allow_retracted: String(data.allow_retracted),
+          });
+          return null;
+        },
+      );
+
+      // Per-paper fan-out: default fields cover trust signals (no include= needed).
+      async function* walkGen() {
+        for (const ambcId of ambcToRow.keys()) {
+          try {
+            const rec = (await client.getBiomedRecord(ambcId)) as Record<string, unknown>;
+            yield { ambcId, rec, error: null as string | null };
+          } catch (e) {
+            yield { ambcId, rec: null, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+      for await (const step of withIdleTimeout(walkGen(), 180_000)) {
+        const idx = ambcToRow.get(step.ambcId)!;
+        if (step.error) { rows[idx].lookup_error = step.error; continue; }
+        const rec = step.rec as Record<string, unknown>;
+        const retracted = Boolean(rec["isRetracted"]);
+        const jufo = (rec["journalQualityJufo"] as number) ?? 0;
+        const cites = (rec["citationCount"] as number) ?? 0;
+        rows[idx].isRetracted = String(retracted);
+        rows[idx].journalQualityJufo = String(jufo);
+        rows[idx].citationCount = String(cites);
+        // Apply threshold filter
+        const included = (!retracted || data.allow_retracted) && jufo >= data.min_jufo && cites >= data.min_citation_count;
+        rows[idx].included_in_prescreen = String(included);
+      }
+
+      const included = rows.filter((r) => r.included_in_prescreen === "true").length;
+      return { rows, summary: { total: rows.length, included, excluded: rows.length - included } };
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : "Pre-screen run failed");
+    }
+  });
 ```
+
+### File 3: `src/routes/index.tsx` — TanStack Start route + page component
+
+The `component: Index` binding is REQUIRED. Root is `<main>` — no outer wrapper.
+
+```tsx
+// src/routes/index.tsx
+import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { runPreScreen } from "@/lib/prescreen.functions";
+
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "SR Pre-Screen — Amass" },
+      { name: "description", content: "PRISMA pre-screen credibility-filter for systematic reviews." },
+    ],
+  }),
+  component: Index, // ← REQUIRED. Without this, SSR fails.
+});
+
+function Index() {
+  const [pmidsInput, setPmidsInput] = useState("");
+  const [minJufo, setMinJufo] = useState(2);
+  const [allowRetracted, setAllowRetracted] = useState(false);
+  const [minCitationCount, setMinCitationCount] = useState(10);
+  const preScreen = useServerFn(runPreScreen);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const pmids = pmidsInput.split(/\s+/).filter(Boolean);
+      return preScreen({ data: { pmids, min_jufo: minJufo, allow_retracted: allowRetracted, min_citation_count: minCitationCount } });
+    },
+  });
+
+  return (
+    <main className="min-h-screen bg-background text-foreground font-sans">
+      <header className="border-b border-border">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <h1 className="text-2xl font-extrabold tracking-tight">amass</h1>
+          <span className="text-xs text-muted-foreground font-mono">sr-pre-screen · v0.1</span>
+        </div>
+      </header>
+
+      <section className="max-w-6xl mx-auto px-6 py-10 space-y-8">
+        {/* PMID textarea + threshold controls (min_jufo, allow_retracted, min_citation_count) + Try-sample + Pre-screen button + Results table + Download RIS + Download CSV */}
+      </section>
+    </main>
+  );
+}
+```
+
+---
+
+## What you build
+
+The user pastes a PMID dump (1,000-5,000 rows, one per line) and configures credibility thresholds. The handler chunks PMIDs into ~100-item batches and runs `POST /records/lookup` concurrently. For each resolved canonical `AMBC_`, it calls `GET /records/{amassId}` (no `include` — `isRetracted`, `journalQualityJufo`, `citationCount` are default fields), then client-side filters against the thresholds. Output: results table + Rayyan/Covidence-importable RIS file (included papers only) + 11-column audit CSV (all papers with `included_in_prescreen` boolean + replayed thresholds per row).
+
+Input surface: textarea + 3 threshold controls. Empty state: Try-sample with ~10 illustrative GLP-1 PMIDs. Output: paginated results table + Download buttons. During fan-out: Cancel + progress indicator.
+
+---
+
+## API contract — load-bearing, follow exactly
+
+### Endpoints used
+
+- `POST /api/v1/cores/biomedcore/records/lookup` — batch resolve PMID → `AMBC_` (chunked to ~100 items per request)
+- `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record with default fields (covers `isRetracted` + `journalQualityJufo` + `citationCount` — do NOT pass `include` flags)
+
+### Auth + rate limit
+
+`Authorization: Bearer ${AMASS_API_KEY}`. 60/60s. 429 → exponential backoff via `Retry-After`. 401/403 → surface directly.
+
+### Response envelope
+
+`{ "data": ... }` wrapped — unwrap before consuming. `POST /records/lookup` per-item:
+
+```json
+{ "input": { "pmid": "..." }, "amassIds": ["AMBC_..."] }
+```
+
+or
+
+```json
+{ "input": { "pmid": "..." }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }
+```
+
+Per-item `error` is a STRUCTURED OBJECT — extract `.message` before rendering. NEVER render the error object directly (React #31 crashes).
+
+### Top-level errors
+
+Non-2xx body: `{ "error": { "code": ..., "message": ... } }`. The reference code's `req<T>` throws; handler `try/catch` re-throws so TanStack Query surfaces as `mutation.error.message`.
+
+### Lookup chunking
+
+`POST /records/lookup` `items[]` accepts up to ~100 items per request. Use the `chunk()` helper.
 
 ---
 
 ## Worked example
 
-Use these illustrative PMIDs in the empty-state Try-sample button. Render ALL trust-filter values from the live Amass response — NEVER hardcode them.
-
 - **Review scope:** GLP-1 receptor agonists in obesity
 - **Sample PMIDs (10 illustrative — re-verify against PubMed before binding to a real SR):** 36720262, 35658024, 34614329, 36331190, 35658026, 34170647, 35470291, 32109013, 32966830, 35658028
 - **Default thresholds:** `min_jufo=2`, `allow_retracted=false`, `min_citation_count=10`
-- **Expected behavior:** all 10 PMIDs resolve to canonical `AMBC_` IDs; the included subset depends on the threshold filter applied to live data
 
 Try-sample tooltip: "GLP-1 receptor agonists in obesity — 10 illustrative PMIDs. Re-verify against PubMed before binding to a real SR."
 
@@ -206,69 +345,74 @@ Try-sample tooltip: "GLP-1 receptor agonists in obesity — 10 illustrative PMID
 
 ## Per-starter constraints
 
-- Audit CSV has exactly these 11 columns: `pmid, accessed_at, AMBC_id, isRetracted, journalQualityJufo, citationCount, lookup_error, included_in_prescreen, threshold_min_jufo, threshold_min_citation_count, threshold_allow_retracted`. The trailing three `threshold_*` columns repeat the run-time threshold values on every row so a downstream reviewer can reproduce the inclusion/exclusion verdicts without remembering what the screener set.
-- RIS file output uses the standard RIS field mapping for journal articles: `TY=JOUR, PMID, TI, AU, JO, JF, PY, DO, AB`. Each emitted RIS record represents one INCLUDED paper. Excluded papers are NOT in the RIS file (only in the audit CSV).
-- v0.1 ceiling: 5,000 PMIDs per pre-screen run. The chunking strategy (100 per batch) keeps the lookup phase under the rate-limit ceiling. For larger SR corpora, run multiple sessions or extend with a streaming worker.
-- v0.1 path is lookup-only — no BiomedCore search-driven discovery. Adding search-driven auto-expansion of the review scope is the primary extension.
+- Audit CSV has 11 columns: `pmid, accessed_at, AMBC_id, isRetracted, journalQualityJufo, citationCount, lookup_error, included_in_prescreen, threshold_min_jufo, threshold_min_citation_count, threshold_allow_retracted`. The trailing 3 `threshold_*` columns repeat run-time values per row for reviewer reproducibility.
+- RIS file: standard RIS field mapping (`TY=JOUR, PMID, TI, AU, JO, JF, PY, DO, AB`). Only INCLUDED papers go in the RIS. Excluded papers only appear in the audit CSV.
+- v0.1 ceiling: 5,000 PMIDs per run. Chunking (100 per batch) keeps lookup phase under rate-limit ceiling.
+- v0.1 is lookup-only — no BiomedCore search-driven discovery (extension path).
 
 ---
 
 ## Kit conventions (apply to all Amass starters)
 
 **Visual:**
-- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) render in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
-- Neutral, professional palette. shadcn-style design tokens or Tailwind defaults are fine — no marketing colors. Dark mode follows OS `prefers-color-scheme`; no toggle.
+- External IDs (PMID, DOI, NCT, `AMBC_`, `AMTC_`) in monospace — IBM Plex Mono. Prose in sans-serif — Inter. Both loaded from Google Fonts (`https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;700&display=swap`).
+- Neutral palette. shadcn-style tokens or Tailwind defaults. Dark mode follows OS `prefers-color-scheme`; no toggle.
 - Lucide React for icons.
 - Header: wordmark `amass` in Inter weight 800 at top-left.
 
 **UX behavior:**
 - Empty state shows a Try-sample button that loads the worked example identifiers verbatim.
 - Long-running fan-outs render an analyst-visible Cancel button + progress indicator.
-- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`; on stall, surface the error inline.
-- Per-row error rendering: invalid identifiers show the verbatim upstream error message on that one row. Errors NEVER crash the surface.
-- No `AskUserQuestion` to gate scaffolding on credentials — the standard env-var prompt covers `AMASS_API_KEY` at runtime.
+- Wrap fan-out async generators in `withIdleTimeout(gen, 180_000)`.
+- Per-row error rendering: invalid identifiers show verbatim upstream error. Errors NEVER crash the surface.
+- No `AskUserQuestion` gating on credentials — env-var prompt covers `AMASS_API_KEY` at runtime.
 
-**Stack:**
-- TypeScript + React + a server-function-capable framework. Lovable defaults to TanStack Start; Next.js App Router is the alternative.
-- `lib/amass.ts` carries `import "server-only"` at the top. Never imported from a `"use client"` component.
-- `https://api.amass.tech` is hardcoded as the base URL in `lib/amass.ts`. Do NOT introduce an `AMASS_API_BASE_URL` env var.
-- Pin React 18.3.1, TypeScript 5.4.5, zod 3.23.8, lucide-react 0.453.0, server-only 0.0.1. Add framework packages on top.
-
-**Pre-publish cleanup (DO THIS — Lovable scaffolds may leave these in place):**
-- Strip ALL `data-lovable-blank-page-placeholder="REMOVE_THIS"` attributes.
-- Strip ALL `<img>` tags pointing at `cdn.gpteng.co`.
-- If Lovable left an outer `<div className="flex min-h-screen items-center justify-center">` wrapping the real app + a leftover placeholder image, REMOVE the outer wrapper entirely so the real app's root `<div>` is the only top-level returned element.
+**Stack (TanStack Start + Vite — Lovable's default):**
+- Server-only files use `.server.ts` filename. DO NOT add `import "server-only"`.
+- Server functions: `src/lib/<name>.functions.ts` with `createServerFn({ method: "POST" }).inputValidator(...).handler(...)`.
+- Route + page: `src/routes/index.tsx` with `createFileRoute("/")({ head, component: Index })`. The `component` binding is REQUIRED.
+- `https://api.amass.tech` hardcoded. NO `AMASS_API_BASE_URL` env var.
 
 ---
 
 ## Validation
 
-After `npm run dev`, verify in order:
+After `npm run dev`:
 
-1. **Empty state** renders cleanly with the Try-sample button + 3 threshold controls visible. Browser console clean (no errors / warnings about `data-lovable-blank-page-placeholder` or unclosed JSX).
-2. **Try sample** loads the 10 GLP-1 PMIDs and runs end-to-end. Results table renders with one row per PMID, each showing the canonical `AMBC_` ID, the live JuFo tier, the live `isRetracted` flag, and the live `citationCount`.
-3. **Threshold adjustment:** change `min_jufo` from 2 to 3 and re-run. The included count drops accordingly; rows with `journalQualityJufo < 3` flip to `included_in_prescreen=false`. The page does NOT crash.
-4. **Download RIS + CSV:** both files emit cleanly. The RIS file contains only included papers in valid RIS format (opens in Rayyan or Covidence). The CSV contains all 11 columns with `threshold_*` values replayed on every row.
+1. **Empty state** renders `<main>` root + amass wordmark + PMID textarea + 3 threshold controls + Try-sample. Console clean.
+2. **Try sample** loads 10 GLP-1 PMIDs. Results table renders one row per PMID with live JuFo tier + `isRetracted` flag + `citationCount`.
+3. **Threshold adjustment:** change `min_jufo` from 2 to 3 and re-run. Included count drops; rows with `journalQualityJufo < 3` flip to `included_in_prescreen=false`. Page does NOT crash.
+4. **Download RIS + CSV:** both files emit cleanly. RIS contains only included papers in valid RIS format. CSV has all 11 columns with `threshold_*` replayed per row.
 
 ---
 
 ## Hand-off
 
-Build, lint, typecheck must pass. Apply the Pre-publish cleanup steps from Kit conventions above.
+Build, lint, typecheck must pass.
 
-**Credentials:** get your `AMASS_API_KEY` from https://platform.amass.tech and add it to `.env`.
-
-To run: `npm run dev`.
+**Credentials:** `AMASS_API_KEY` from https://platform.amass.tech. Run `npm run dev`.
 
 **Want to extend it?**
-- Add cohort persistence — save pre-screen runs against a `project_id` so multiple SR teams can collaborate on the same corpus over time.
-- Add a PRISMA-flow-diagram generator that consumes the audit CSV and emits the standard PRISMA 2020 flow figure.
-- Add field-specific JuFo overrides — different credibility floor for clinical-trial papers vs basic-science papers.
+- Cohort persistence — save pre-screen runs against a `project_id`.
+- PRISMA-flow-diagram generator consuming the audit CSV.
+- Field-specific JuFo overrides (different floor for clinical-trial vs basic-science papers).
 
-Questions? Join the Amass Developer Community on Discord: https://discord.com/invite/sEGaBHMhWa.
+Discord: https://discord.com/invite/sEGaBHMhWa.
 
 ---
 
 ## License
 
 Apache-2.0. Copyright 2026 Amass Technologies. Source: https://github.com/lluisDTU/amass-technologies-amass-starters.
+
+---
+
+## Appendix — Next.js App Router alternative
+
+For Claude Code / Cursor / Next.js production users:
+
+- `lib/amass.ts` — same code as `src/lib/amass.server.ts` above, with `import "server-only"` added at the top.
+- `app/api/pre-screen/route.ts` — standard Next.js POST handler with identical pre-screen logic.
+- `app/page.tsx` — `"use client"` page POSTing to `/api/pre-screen`. Same `<main>` root, no outer wrapper.
+
+Amass API contract, worked example, validation, kit conventions all apply identically.
