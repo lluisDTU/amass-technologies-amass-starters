@@ -1,8 +1,8 @@
 # Amass API Starters
 
-> Six end-to-end starter apps that show what's distinctive about the [Amass API](https://api.amass.tech) — built for biomedical literature and clinical-trial workflows that depend on canonical IDs, cross-core links, and trust filters at the non-commercial tier.
+> Six end-to-end starter apps that show what's distinctive about the [Amass API](https://api.amass.tech) — built for biomedical literature and clinical-trial workflows that depend on canonical IDs, cross-core links, and built-in credibility signals (retraction, journal quality, citation count) that elsewhere require paid third-party APIs.
 
-**v0.1.0 — initial public release.** Apache-2.0.
+**v0.2.0 — kit slim, May 2026.** Apache-2.0.
 
 ---
 
@@ -10,7 +10,7 @@
 
 Each starter is a self-contained TypeScript + React app you build by pasting a single prompt into Lovable, Claude Code, Cursor, or any AI builder. The `SKILL.md` file in each starter directory is the prompt — fetch it as a raw URL and the builder scaffolds the working app against the Amass API.
 
-Each starter gives you a running head start: a real workflow, validated against a worked example, with the error semantics, trust filters, and paper↔trial cross-core walks already wired up. Fine-tune them for your data and your users.
+These aren't toys. Each starter ships a real workflow against a verified worked example, with auditable error semantics, trust-filter discipline, and cross-core walks that competitors don't expose as a single API surface. They're meant as a headstart you fine-tune for your own data and your own users.
 
 ---
 
@@ -51,13 +51,13 @@ The Amass API exposes two live Cores — **BiomedCore** (biomedical publications
 
 **Cross-core walks** — paper→trial via `referencesTrialCore`, trial→paper via `referencesBiomedCore` — are exposed as structured array fields on a single record fetch. Competitors require 2-4 calls across separate entity-key systems (PubMed + ClinicalTrials.gov + OpenAlex) and lose the structured guarantee in the process.
 
-**Trust filters at the non-commercial tier** — `isRetracted` (default field), `journalQualityJufo` (JuFo journal-quality tier 1-3), `citationCount` — wired into the same response that delivers the cited evidence. No per-paper retraction-DB scraping, no JuFo-table lookup, no separate citation-count API.
+**Built-in credibility signals on every record** — `isRetracted` (default field), `journalQualityJufo` (JuFo journal-quality tier 1-3), `citationCount` — wired into the same response that delivers the cited evidence. No per-paper retraction-DB scraping, no JuFo-table lookup, no separate citation-count API — and all of it on the free tier, instead of the three licensed APIs (Retraction Watch + JuFo + Web of Science / Scopus) that competitors stitch together.
 
 ---
 
 ## Get an API key
 
-Sign up at [platform.amass.tech](https://platform.amass.tech) — the non-commercial tier is free and covers all six starters end-to-end.
+Sign up at [platform.amass.tech](https://platform.amass.tech) — the free tier covers all six starters end-to-end.
 
 ---
 

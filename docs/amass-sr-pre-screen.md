@@ -22,7 +22,7 @@ The worked example binds to an illustrative SR scope ("GLP-1 receptor agonists i
 
 **Per-item-error semantics on batch lookup.** A bad PMID in the 5,000-row dump (typo, deprecated identifier) surfaces inline with a verbatim upstream error message on that one row — without crashing the batch. The audit-CSV's `lookup_error` column carries the verbatim string per Hard Rule #5 — auditable for the PRISMA methods section.
 
-**Trust filters at the non-commercial tier.** JuFo + retraction + citation-count post-filters all available on the Amass free tier — no Web of Science / Scopus / Crossref Citation API subscriptions required. SR-as-a-service consultancies running on academic budgets can ship this without procuring three separate licensed APIs.
+**Free credibility filters that elsewhere require paid APIs.** JuFo (journal quality) + retraction + citation count, all on the Amass free tier — no Web of Science, Scopus, or Crossref Citation API subscriptions required. SR-as-a-service consultancies running on academic budgets can ship this without procuring three separate licensed APIs.
 
 ## What you get out of the box
 
