@@ -4,7 +4,7 @@ description: Use when building a weekly pipeline-monitoring digest for biotech c
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.4.2"
+  version: "0.4.3"
 ---
 
 # Pipeline Monitor
@@ -46,7 +46,7 @@ export type Phase =
   | "NA";
 
 export interface TrialSearchOpts {
-  phase?: ReadonlyArray<Phase>;
+  phase?: Phase; // SINGLE phase per request — API rejects multiple `phase=` params with 400. Loop client-side.
   minStartDate?: string; // ISO YYYY-MM-DD
   sponsorType?: string;
   limit?: number; // default 300, ceiling 300
@@ -90,7 +90,7 @@ class AmassClient {
   searchTrialcore = (query: string, opts: TrialSearchOpts = {}) => {
     const params = new URLSearchParams();
     params.set("query", query);
-    for (const p of opts.phase ?? []) params.append("phase", p);
+    if (opts.phase) params.set("phase", opts.phase); // SINGLE phase only — API rejects multi-value with 400
     if (opts.minStartDate) params.set("minStartDate", opts.minStartDate);
     if (opts.sponsorType) params.set("sponsorType", opts.sponsorType);
     params.set("limit", String(opts.limit ?? 300));
@@ -157,13 +157,22 @@ export const runDigest = createServerFn({ method: "POST" })
       const client = getAmassClient();
 
       // Per-sponsor TrialCore search with minStartDate filter → array of new trial records.
+      // CRITICAL: the `phase` param accepts ONE value per request. Loop phases client-side,
+      // then merge by canonical amassId to dedupe.
       const sponsorResults = await Promise.all(
         data.sponsors.map(async (sponsor) => {
-          const trials = await client.searchTrialcore(sponsor.canonical, {
-            phase: data.phases,
-            minStartDate: data.last_check,
-          });
-          return { sponsor: sponsor.canonical, trials };
+          const perPhase = await Promise.all(
+            data.phases.map((phase) =>
+              client.searchTrialcore(sponsor.canonical, { phase, minStartDate: data.last_check }),
+            ),
+          );
+          const merged = new Map<string, unknown>();
+          for (const batch of perPhase) {
+            for (const t of batch as Array<{ amassId?: string }>) {
+              if (t?.amassId) merged.set(t.amassId, t);
+            }
+          }
+          return { sponsor: sponsor.canonical, trials: Array.from(merged.values()) };
         }),
       );
 
@@ -291,7 +300,7 @@ Input surface: single YAML textarea. Empty state: Try-sample with the SCLC-DLL3-
 
 ### Endpoints used
 
-- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=PHASE2&phase=PHASE2/PHASE3&phase=PHASE3&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search
+- `GET /api/v1/cores/trialcore/records?query=<sponsor>&phase=<ONE_PHASE>&minStartDate=<YYYY-MM-DD>&limit=300` — per-sponsor TrialCore search (loop phases client-side; see operational rules below)
 - `GET /api/v1/cores/trialcore/records/{amassId}?include=referencesBiomedCore` — fetch trial record with paper-side cross-core spine
 - `GET /api/v1/cores/biomedcore/records/{amassId}` — fetch paper record (default fields cover trust signals)
 
@@ -302,6 +311,7 @@ Input surface: single YAML textarea. Empty state: Try-sample with the SCLC-DLL3-
 - **Per-item lookup errors:** each `data[]` element on `POST /records/lookup` is either `{ amassIds: [...] }` (success) OR `{ error: { code, message } }` (per-item failure). The error field is a STRUCTURED OBJECT — empirically verified, even if the live docs example shows the simpler `{ error: "..." }` form. Always extract `.message` as a string before rendering. NEVER render the error object directly as a React child (React #31 crash). Example: `{ "input": { "pmid": "99999999" }, "error": { "code": "NOT_FOUND", "message": "Identifier not found" } }`.
 - **Top-level errors:** non-2xx body is `{ "error": { "status", "code", "message" } }`. The reference code's `req<T>` throws with the upstream code+message; the route handler's outer `try/catch` re-throws so TanStack Query surfaces it as `mutation.error.message` on the client. NEVER let an uncaught throw propagate to the route-level error boundary.
 - **Lookup before fetch:** `GET /records/{amassId}` accepts ONLY canonical `AMBC_` / `AMTC_` IDs. Passing PMID/DOI/NCT directly returns 404. Always: lookup → resolve canonical → fetch by canonical ID.
+- **TrialCore `phase` param accepts ONE value per request.** Empirically verified: multiple `phase=` query params (or comma-separated `phase=A,B,C`) return `400 BAD_REQUEST: Request validation failed`. To filter across multiple phases (e.g. PHASE2 + PHASE2/PHASE3 + PHASE3), issue ONE search per phase per sponsor and merge results client-side by canonical `amassId`. The compound enum values (`PHASE1/PHASE2`, `PHASE2/PHASE3`) ARE accepted as a single value — URL-encoded `%2F` is fine.
 
 ### TrialCore search ceiling
 
@@ -344,7 +354,7 @@ last_check: "2026-05-13"
 ## Per-starter constraints
 
 - Sponsor-name canonicalisation: persist analyst-confirmed canonical→aliases map in the watchlist YAML. Genentech maps to Roche.
-- Sponsor cardinality probe: if `query=<canonical>&phase=PHASE2&phase=PHASE2/PHASE3&phase=PHASE3` (no `minStartDate`) returns ≥300 records, narrow the indication scope before the weekly run.
+- Sponsor cardinality probe: for each phase, if `query=<canonical>&phase=<ONE_PHASE>` (no `minStartDate`) returns ≥300 records on any single phase, narrow the indication scope before the weekly run. (Reminder: the API rejects multi-value `phase=`; one phase per probe.)
 - 3-panel dashboard: new trials (left), new papers via trial→paper cross-core walk (center), retraction-flagged citations (right). Do NOT collapse panels.
 - Markdown digest filename: `digest-<watchlist_id>-<YYYY-Wnn>.md` (ISO week number).
 - v0.1: single consolidated response per run. No digest-history persistence (extension path).
