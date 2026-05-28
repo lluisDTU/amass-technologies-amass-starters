@@ -4,7 +4,7 @@ description: Use when building a PRISMA pre-screen credibility-filter for system
 license: Apache-2.0
 metadata:
   author: amass
-  version: "0.4.2"
+  version: "0.5.0"
 ---
 
 # SR Pre-Screen Credibility Filter
@@ -18,6 +18,23 @@ For systematic-review researchers running PRISMA 2020 — Cochrane groups, SR-as
 This starter is built on **TanStack Start + Vite + TanStack Router + TanStack Query** (Lovable's default). THREE TypeScript files; do NOT wrap them in any outer template or placeholder component.
 
 For Next.js App Router users, see the Appendix.
+
+### Load-bearing constraints — DO NOT mutate these (read before transcribing)
+
+Past scaffolds in the kit have failed because LLMs "auto-corrected" the spec. Each rule below is a hard constraint from the live Amass API or from Vite/TanStack Start semantics. Violating any of them causes a runtime error or a build error. Do NOT optimise, normalise, or "improve" them.
+
+1. **Per-item lookup error shape is `{ error: { code, message } }`.** Each element of the `data[]` array returned by `POST /records/lookup` is either `{ amassIds: [...] }` (success) OR `{ error: { code, message } }` (per-item failure). The `error` field is a STRUCTURED OBJECT — empirically verified against the live API, even though the documentation example shows a simpler bare-string form. Always extract `.message` as a string before rendering. NEVER pass the error object directly as a React child (React #31 crash). The reference `extractLookupResult()` helper in `amass.server.ts` handles this correctly — DO NOT rewrite it to assume the error is a bare string.
+2. **Trust signals are default fields. Do NOT pass `include=` flags.** `isRetracted`, `journalQualityJufo`, and `citationCount` are returned as default fields on every `GET /biomedcore/records/{amassId}` response. Passing `include=isRetracted,journalQualityJufo,citationCount` is unnecessary and may be ignored or treated as a no-op.
+3. **Replace files completely. Do NOT preserve any Lovable blank-template content.** Before declaring the scaffold complete, the following strings MUST appear ZERO times in `src/`:
+   - `data-lovable-blank-page-placeholder`
+   - `cdn.gpteng.co/blank-app-v1.svg`
+   - `"Your App"` (in meta titles)
+   - `"Replace this with a one-sentence description"`
+   - Any `<div className="flex min-h-screen items-center justify-center">` wrapper around the root `<main>` or around any threshold-control or results-table component.
+   And any single JSX element MUST have at most ONE `className=` attribute (duplicate `className` is a JSX syntax error and React silently keeps only one).
+4. **Server-only enforcement.** Use the `.server.ts` filename suffix (`src/lib/amass.server.ts`). Do NOT add `import "server-only"` — that's a Next.js package that crashes Vite SSR.
+5. **Route component binding.** `createFileRoute("/")` MUST receive `{ head, component: Index }`. Omitting `component: Index` makes SSR render an empty page.
+6. **Lookup chunking is per-100-items.** The reference code chunks the input PMID list into batches of ≤100 before issuing `POST /records/lookup`. Do NOT change this to per-1000 or per-1 — 100 is the documented sweet spot for the batch endpoint.
 
 ### File 1: `src/lib/amass.server.ts` — server-only API client
 
@@ -292,7 +309,7 @@ function Index() {
 
 The user pastes a PMID dump (1,000-5,000 rows, one per line) and configures credibility thresholds. The handler chunks PMIDs into ~100-item batches and runs `POST /records/lookup` concurrently. For each resolved canonical `AMBC_`, it calls `GET /records/{amassId}` (no `include` — `isRetracted`, `journalQualityJufo`, `citationCount` are default fields), then client-side filters against the thresholds. Output: results table + Rayyan/Covidence-importable RIS file (included papers only) + 11-column audit CSV (all papers with `included_in_prescreen` boolean + replayed thresholds per row).
 
-Input surface: textarea + 3 threshold controls. Empty state: Try-sample with ~10 illustrative GLP-1 PMIDs. Output: paginated results table + Download buttons. During fan-out: Cancel + progress indicator.
+Input surface: textarea + 3 threshold controls. Empty state: Try-sample with the SCLC-DLL3-2026Q2 worked example (10 verified PMIDs spanning NEJM through Cureus, designed to demonstrate the JuFo + citation-count filter cleanly). Output: paginated results table + Download buttons. During fan-out: Cancel + progress indicator.
 
 ---
 
@@ -321,11 +338,28 @@ Input surface: textarea + 3 threshold controls. Empty state: Try-sample with ~10
 
 ## Worked example
 
-- **Review scope:** GLP-1 receptor agonists in obesity
-- **Sample PMIDs (10 illustrative — re-verify against PubMed before binding to a real SR):** 36720262, 35658024, 34614329, 36331190, 35658026, 34170647, 35470291, 32109013, 32966830, 35658028
+- **Review scope:** SCLC-DLL3-2026Q2 — Tarlatamab and DLL3-targeted bispecifics for small-cell lung cancer.
+- **Sample PMIDs (10, verified live against Amass BiomedCore on 2026-05-28):** 37861218, 37355629, 39023700, 39876075, 41532856, 41256964, 41401368, 40884462, 41111642, 40419854
 - **Default thresholds:** `min_jufo=2`, `allow_retracted=false`, `min_citation_count=10`
 
-Try-sample tooltip: "GLP-1 receptor agonists in obesity — 10 illustrative PMIDs. Re-verify against PubMed before binding to a real SR."
+Expected behaviour with default thresholds (verified live):
+
+| PMID | First author / Journal | JuFo | Cites | `isRetracted` | Verdict |
+|---|---|---|---|---|---|
+| 37861218 | Ahn / NEJM 2023 (DeLLphi-301) | 3 | 390 | false | **INCLUDED** |
+| 37355629 | Rudin / J Hematol Oncol 2023 (DLL3 review) | 2 | 135 | false | **INCLUDED** |
+| 39023700 | Dhillon / Drugs 2024 (Tarlatamab: First Approval) | 2 | 35 | false | **INCLUDED** |
+| 39876075 | Sands / Cancer 2025 (AE management) | 2 | 24 | false | **INCLUDED** |
+| 41532856 | Mishra / Cancer Discovery 2026 (CTC biomarker) | 3 | 2 | false | EXCLUDED (cites < 10) |
+| 41256964 | Aredo / JTO CRR 2025 (EGFR-mutant DLL3) | 0 | 1 | false | EXCLUDED (jufo < 2) |
+| 41401368 | Antoniu / Exp Opin Biol Ther 2025 (review) | 1 | 0 | false | EXCLUDED (jufo < 2) |
+| 40884462 | Tomić / Biomol Biomed 2025 (SCLC overview) | 1 | 0 | false | EXCLUDED (jufo < 2) |
+| 41111642 | Ismail / Cureus 2025 (heart transplant case) | 0 | 0 | false | EXCLUDED (jufo < 2) |
+| 40419854 | Pathak / Ther Innov Reg Sci 2025 (regulatory) | 1 | 0 | false | EXCLUDED (jufo < 2) |
+
+Under defaults: **4 INCLUDED / 6 EXCLUDED**. PMID 41532856 (Mishra / Cancer Discovery) is a useful teaching case — it has the highest JuFo tier (3, alongside the NEJM anchor) but fails the citation floor because it was published in 2026 and hasn't accumulated cites yet. This demonstrates that the threshold filter cuts on a quality dimension that JuFo alone wouldn't catch.
+
+Try-sample tooltip: "SCLC-DLL3-2026Q2 — Tarlatamab and DLL3-targeted bispecifics in small-cell lung cancer. 10 PMIDs verified live against Amass BiomedCore on 2026-05-28."
 
 ---
 
@@ -361,14 +395,47 @@ Try-sample tooltip: "GLP-1 receptor agonists in obesity — 10 illustrative PMID
 
 ---
 
+## Pre-completion grep checklist — run BEFORE declaring scaffold done
+
+The scaffold is only complete when every grep below returns ZERO. If any returns non-zero, fix the file and re-run before reporting success. These are exact mutations prior scaffolds in the kit have shipped — each one causes runtime failure or a misleading UI.
+
+```
+# Lovable blank-template leftovers (must be 0 — JSX errors / wrong page):
+grep -rn 'data-lovable-blank-page-placeholder\|cdn\.gpteng\.co' src/   → expect 0
+grep -rn '"Your App"\|Replace this with a one-sentence' src/    → expect 0
+grep -rn 'flex min-h-screen items-center justify-center' src/   → expect 0
+
+# Per-item lookup error mishandling (must be 0 — React #31 crash):
+grep -rn 'r\.error\.code\b' src/ | grep -v '\.message'           → expect 0
+grep -rn '{r.error}\|{result.error}\|{lookup_error}' src/        → expect 0  (no raw object renders)
+
+# Server-only crash (must be 0 — crashes Vite SSR):
+grep -rn 'import "server-only"\|from "server-only"' src/        → expect 0
+
+# Required positive checks (must be ≥1):
+grep -rn 'chunk(.*100)' src/                                    → expect ≥1  (lookup chunking)
+grep -rn 'extractLookupResult' src/                             → expect ≥1
+grep -rn 'component: Index' src/routes/                         → expect 1
+grep -rn 'isRetracted\|journalQualityJufo\|citationCount' src/  → expect ≥1 each
+```
+
+If any check fails, fix it and re-run. Do NOT declare the scaffold complete with any non-zero count above.
+
+---
+
 ## Validation
 
 After `npm run dev`:
 
-1. **Empty state** renders `<main>` root + amass wordmark + PMID textarea + 3 threshold controls + Try-sample. Console clean.
-2. **Try sample** loads 10 GLP-1 PMIDs. Results table renders one row per PMID with live JuFo tier + `isRetracted` flag + `citationCount`.
-3. **Threshold adjustment:** change `min_jufo` from 2 to 3 and re-run. Included count drops; rows with `journalQualityJufo < 3` flip to `included_in_prescreen=false`. Page does NOT crash.
-4. **Download RIS + CSV:** both files emit cleanly. RIS contains only included papers in valid RIS format. CSV has all 11 columns with `threshold_*` replayed per row.
+1. **Empty state** renders `<main>` root + amass wordmark + PMID textarea + 3 threshold controls (`min_jufo`, `allow_retracted`, `min_citation_count`) + Try-sample. Console clean (no errors / placeholder warnings / `import "server-only"` crashes).
+2. **Try sample** loads the SCLC-DLL3-2026Q2 set (10 PMIDs: 37861218, 37355629, 39023700, 39876075, 41532856, 41256964, 41401368, 40884462, 41111642, 40419854). Click "Pre-screen". Completes in ~5-10 seconds. Results table renders one row per PMID with live JuFo tier + `isRetracted` flag + `citationCount`. Network tab shows 1 batch lookup + 10 per-paper GET calls.
+3. **Anchor check** with default thresholds (`min_jufo=2`, `allow_retracted=false`, `min_citation_count=10`):
+   - **Exactly 4 PMIDs** flip to `included_in_prescreen=true`: 37861218 (NEJM, JuFo 3, 390 cites), 37355629 (J Hematol Oncol, JuFo 2, 135 cites), 39023700 (Drugs, JuFo 2, 35 cites), 39876075 (Cancer, JuFo 2, 24 cites).
+   - **Exactly 6 PMIDs** flip to `included_in_prescreen=false`. Of those, PMID 41532856 is the notable case: JuFo 3 (highest tier) but only 2 cites → excluded by the citation floor, NOT by JuFo.
+4. **Threshold adjustment:** change `min_jufo` from 2 to 3 and re-run. Included count drops from 4 to 1 (only PMID 37861218 survives — it's the only JuFo-3 entry that also passes the citation floor). Page does NOT crash.
+5. **Invalid PMID test:** add `99999999` to the textarea. Pre-screen completes. That row shows `lookup_error: NOT_FOUND` (or similar message from the live API). Other rows unaffected. Page does NOT crash.
+6. **Download RIS:** file downloads. Open in a text editor. Contains valid RIS format (TY=JOUR, PMID, TI, AU, JO/JF, PY, DO, AB). Only INCLUDED papers appear; excluded ones absent.
+7. **Download CSV:** file downloads. Has 11 columns: `pmid, accessed_at, AMBC_id, isRetracted, journalQualityJufo, citationCount, lookup_error, included_in_prescreen, threshold_min_jufo, threshold_min_citation_count, threshold_allow_retracted`. Threshold columns repeat run-time values per row for reviewer reproducibility.
 
 ---
 
